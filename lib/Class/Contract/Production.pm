@@ -1,16 +1,16 @@
 package Class::Contract::Production;
 use strict;
-use vars qw( $VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
+use vars qw( $VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS );
 require Exporter;
 use Carp;
 
-$VERSION = '1.13';
+$VERSION = '1.14';
 
 @ISA = qw(Exporter);
 @EXPORT = qw(contract ctor dtor attr method pre impl post invar inherits
-             self value old class abstract private optional check callstate
+             self value class abstract private optional check callstate
              failmsg clon);
-@EXPORT_OK = qw(scalar_attrs array_attrs hash_attrs methods);
+@EXPORT_OK = qw(scalar_attrs array_attrs hash_attrs methods old);
 %EXPORT_TAGS = (DEFAULT  => \@EXPORT,
                 EXTENDED => \@EXPORT_OK,
                 ALL      => [@EXPORT, @EXPORT_OK]);
@@ -24,11 +24,39 @@ my $msg_target;
 my @class_dtors;
 END { $_->()  foreach (@class_dtors) }
 
-sub contract(&) {
-  my ($spec) = @_;
-  $spec->();
-  return _build_class(caller);
+my ($carp, $croak) = (
+  sub {
+    my (@c) = caller(0);
+    ($c[3] eq 'Class::Contract::Production::__ANON__')
+      ? print STDERR (@_, " at $c[1] line $c[2]\n") : &carp
+  },
+  sub {
+    my (@c) = caller(0);
+    ($c[3] eq 'Class::Contract::Production::__ANON__')
+      ? die(@_, " at $c[1] line $c[2]\n") : &croak 
+  }
+);
+
+sub import {
+  my $class = $_[0];
+  my $caller = caller;
+  $contract{$caller}{use_old} = grep(/^old$/, @_) ? 1 : 0;
+  push @_, @EXPORT;
+  no strict 'refs';
+  INIT {
+    *{$caller .'::croak'} = $croak  if defined *{$caller .'::croak'}{'CODE'};
+    *{$caller .'::carp'}  = $carp   if defined *{$caller .'::carp'}{'CODE'};
+  }
+  goto &Exporter::import;
 }
+
+sub unimport {
+  my $class = shift;
+  my $caller = caller;
+  $contract{$caller}{use_old} = 0  if grep /^old$/, @_; 
+}
+
+sub contract(&) {  $_[0]->();  _build_class(caller) }
 
 sub check(\%;$) {
 }
@@ -172,7 +200,7 @@ sub _build_class($) {
 localscope: {
   my @context;
   sub _set_context  {
-    push @context, {'__SELF__' => shift };
+    push @context, {'__SELF__' => shift};
 
   }
   sub _free_context {
@@ -180,19 +208,16 @@ localscope: {
   }
   sub old() {
     croak "No context. Can't call &old"  unless @context;
+    my $self = $context[-1]{__SELF__};
+    my $class = ref($self) || $self;
+    croak "Support for &old has been toggled off"
+      unless ($contract{$class}{'use_old'});
   }
 
   my @value;
-  sub _set_value  { push @value, shift }
-  sub _free_value {
-    my $res = pop @value;
-    return  unless defined $res;
-    my $resref = ref $res;
-    return $resref eq 'ARRAY'  ? @$res
-         : $resref eq 'HASH'   ? %$res
-         : $resref eq 'SCALAR' ? $$res
-         :                        $res;
-  }
+  sub _set_value  { push @value, \@_ }
+  sub _free_value { my $v = pop @value; wantarray ? @$v : $v->[0] }
+
   sub value { 
     croak "Can't call &value "  unless @value;
     return $value[-1];
@@ -222,6 +247,11 @@ sub _inheritance {                                  #  A  D  Invokation order
   my (%inherited_clause, %inherited_impl);
   foreach my $ancestor ( reverse @{$spec->{'parents'} || [] } ) {
     my $parent = $contract{$ancestor} || next;
+    if ($parent->{'use_old'} and not $spec->{'use_old'}) {
+      croak("Derived class $classname, has not toggled on support for ->old\n",
+            "which is required by ancestor $ancestor. Did you forget to\n",
+            "declare: use Class::Contract::Production 'old'; ?");
+    }
     foreach my $clause ( qw( attr method ctor clone dtor ) ) {
       foreach my $name ( keys %{ $parent->{$clause} || {} } ) {
         # Inherit each clause from ancestor unless defined
@@ -259,6 +289,10 @@ sub _inheritance {                                  #  A  D  Invokation order
             $inherited_impl{$name}++;
             $spec->{$clause}{$name}{'impl'}=$parent->{$clause}{$name}{'impl'};
           }
+          croak("Forget 'private'? $classname inherits private $name from ",
+                "$ancestor\n")
+            if ($parent->{$clause}{$name}{'private'} 
+                and not $spec->{$clause}{$name}{'private'})
         }
       }
     }
@@ -287,25 +321,27 @@ sub _attributes {
       local $^W;
       *{"${classname}::$name"} = sub {
         croak(qq|Can\'t access object attr w/ class reference |,$attr->{'loc'})
-        unless ($attr->{'shared'} or ref($_[0]));
+          unless ($attr->{'shared'} or ref($_[0]));
 
-        my $self = shift;
-        _set_context $attr->{'shared'} ? ref($self)||$self : $self; 
-        my $attr_ref = ($attr->{'shared'})
-        ? $class_attr{$classname}{$name}
-        : $data{$$self}{$name};
-        _set_value $attr_ref;  
         my $caller = caller;
         croak "attribute ${classname}::$name inaccessible from package $caller"
-        unless $classname->isa($caller);
+          unless $classname->isa($caller);
+
+        my $self = shift;
+        _set_context(($attr->{'shared'} ? ref($self)||$self : $self),
+                     join ' line ', [caller]->[1,2]);
+        my $attr_ref = ($attr->{'shared'})
+          ? $class_attr{$classname}{$name}
+          : $data{$$self}{$name};
+        _set_value $attr_ref;  
 
         
         _free_context;
         
 
-        _free_value;
+        scalar _free_value;
         return $attr_ref;
-      }
+      };
     }
   }
 }
@@ -331,24 +367,24 @@ sub _methods {
       no strict 'refs';
       *{"${classname}::$name"} = sub {
         my $caller = caller;
-        croak "private method ${classname}::$name inaccessible from $caller"
-          if $method->{'private'} and not $caller->isa($classname);
+        croak("private method ${classname}::$name inaccessible from ",
+              scalar caller)
+          if ($method->{'private'}
+              and not ($classname->isa($caller))); # or $caller->isa($classname)));
 
         my $self = shift;
-        _set_context $method->{'shared'} ? ref($self)||$self : $self; 
+        _set_context(($method->{'shared'} ? ref($self)||$self : $self),
+                     join ' line ', [caller]->[1,2]);
   
 
-        if (wantarray) {
-          _set_value [$method->{'impl'}{'code'}->(@_)] 
-        } else { 
-          my $r = $method->{'impl'}{'code'}->(@_);
-          _set_value((ref($r) and ref($r) !~ /^(ARRAY|HASH)$/) ? $r : \$r); 
-        }
+        _set_value wantarray
+          ? $method->{'impl'}{'code'}->(@_)
+          : scalar $method->{'impl'}{'code'}->(@_);
         
 
         _free_context;
-        return _free_value;
-      }
+        _free_value;
+      };
     }
   }
 }
@@ -561,7 +597,7 @@ localscope: {
   my %seen = ();
   my $depth = 0;
   sub _dcopy { # Dereference and return a deep copy of whatever's passed
-  	my ($r, $ref, $rval);
+    my ($r, $ref, $rval);
     $ref = ref($_[0])   or return $_[0];
     exists $seen{$_[0]} and return $seen{$_[0]};
     $depth++;

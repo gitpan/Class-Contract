@@ -291,6 +291,25 @@ print "fail: $fail\n"  if $fail;
 $fail;
 CODE
 
+::ok('desc'   => 'private inheritance stays private',
+     'expect' => qr/^Forget 'private'?/s,
+     'code'   => <<'CODE');
+package Private;
+use Class::Contract;
+contract {
+  private class method 'foo';
+    impl {1};
+};
+
+package Private::Still;
+use Class::Contract;
+contract {
+  inherits 'Private';
+  class method 'foo';
+    impl {1};
+};
+
+CODE
 
 __DATA__
 

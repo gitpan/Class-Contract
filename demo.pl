@@ -53,7 +53,7 @@
 #
 
 package QueueBase;
-use Class::Contract;
+use Class::Contract 'old';
 
 contract {
 	abstract method 'append';
@@ -66,7 +66,7 @@ contract {
 
 
 package ClientQueue;
-use Class::Contract;
+use Class::Contract 'old';
 
 contract {
 	inherits QueueBase;
@@ -134,7 +134,7 @@ contract {
 
 
 package OrderedQueue;
-use Class::Contract;
+use Class::Contract 'old';
 
 contract
 {
@@ -161,7 +161,7 @@ sub new {
 
 package Main;
 
-use Class::Contract 'check';
+use Class::Contract qw(check);
 
 check my %contract => 0 for (__ALL__);	# TURN OFF ALL OPTIONAL CHECKS
 

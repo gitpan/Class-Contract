@@ -1,50 +1,31 @@
 Revision history for Perl extension Class::Contract.
 
-Future Plans and Ponderings:
+Planned for next release:
 
-  - Rewrite to use Attribute::Handlers
+  - Long overdue documentation update
 
-  - Damian's Legacy
-    o  Class Flattening and shortening
-    o  Easier mechanisms for porting code to use CC. Like allowing 
-       pre-declared subroutines to be assimilated into contract
+  - Rewrite tests using MSCHWERN's new Test::Harness
 
-  - Update documentation...
-    o  better examples of using objects in contracts
-    o  functions: scalar_attrs, array_attrs, hash_attrs, private, clon
+  - Flattening and shortening
 
-  - Constructor
-    o  Allow user-defined default values for attributes
-    o  Ponder whether or not it would be a good idea to provide a better
-       default mechanism for setting object attribute values during
-       construction. Particularly attributes which are themselves objects.
 
-  - <C>old</C>
-    o  Allow to toggle support on/off for all and/or per-contract
-    o  Turn off by default too much overhead copying packages and objects
-    o  Reexamine implementation of <C>old</C> with attention to destructors
-       and cleanup of the temporarily allocated package namespace better. 
-       Worry about magic and stash de-allocation.
+1.14    Mon Jun 18 16:28:02 2001
 
-  - <C>private</C>: revisit and determine what to do if derived class
-    tries to make its derived privates public.
+  - <C>croak</C> and <C>carp</C> are wrapped to facilitate reporting
+    correct file and line numbers within <C>impl</C>. Previously it was
+    hard to get useful file/line information when throwing an exception
+    within implementations.
 
-  - <C>post</C>: Add support for post-conditions on objects? How? Scalars,
-    arrays, and hashes are actually tied objects and do this on destruction.
-    Perhaps support post conditions on objects created via Class::Contract
-    by return a blessed reference to the same $key used to lookup object data
-    in the lexical Class::Contract %data. And provide an object attribute
-    for post-conditions that gets called by doppleganger on destruction?
+  - <C>private</C>
+    Forgetting to declare an inherited private method private
+    will cause croak. If for example you are adding pre/post-conditions
+    or defining a new implementation for a derived method, you must
+    declare it 'private', or an exception will be raised.
 
-  - <C>failmsg</C>: Figure out how get <C>_location</C> to provide correct
-    file and line number when evals are involved.
-
-  - Tests 
-    o  Restructure and expand
-    o  Check out new version of Test::Harness and see if I can drop the
-       Magic.pm hack used for testing.
-
-  - Add support for <C>friend</C> classes?
+  - <C>old</C> is now off by default. I have noticed, and others have
+    complained that it caused too much overhead. To toggle on/off per package:
+      use Class::Contract 'old';
+      no Class::Contract 'old';
 
 
 1.13    Mon May 07 10:47:21 2001
@@ -212,3 +193,42 @@ Future Plans and Ponderings:
 
   - original version; created by h2xs 1.18
     (very much alpha)
+
+
+Future Plans and Ponderings:
+
+  - Someday rewrite to use Attribute::Handlers
+
+  - Damian's Legacy
+    o  Class Flattening and shortening
+    o  Easier mechanisms for porting code to use CC. Like allowing 
+       pre-declared subroutines to be assimilated into contract
+
+  - Update documentation...
+    o  better examples of using objects in contracts
+    o  functions: scalar_attrs, array_attrs, hash_attrs, private, clon
+
+  - Constructor
+    o  Allow user-defined default values for attributes
+    o  Ponder whether or not it would be a good idea to provide a better
+       default mechanism for setting object attribute values during
+       construction. Particularly attributes which are themselves objects.
+
+  - <C>old</C>
+    o  Reexamine implementation of <C>old</C> with attention to destructors
+       and cleanup of the temporarily allocated package namespace better. 
+       Worry about magic and stash de-allocation.
+
+  - <C>post</C>: Add support for post-conditions on objects? How? Scalars,
+    arrays, and hashes are actually tied objects and do this on destruction.
+    Perhaps support post conditions on objects created via Class::Contract
+    by return a blessed reference to the same $key used to lookup object data
+    in the lexical Class::Contract %data. And provide an object attribute
+    for post-conditions that gets called by doppleganger on destruction?
+
+  - Tests 
+    o  Restructure and expand
+    o  Check out new version of Test::Harness and see if I can drop the
+       Magic.pm hack used for testing.
+
+  - Add support for <C>friend</C> classes?
