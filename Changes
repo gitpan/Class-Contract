@@ -1,0 +1,39 @@
+Revision history for Perl extension Class::Contract.
+
+0.01  Fri Jul 23 14:35:54 1999
+	- original version; created by h2xs 1.18
+	  (very much alpha)
+
+
+0.05	Wed Nov 24 14:11:22 1999
+
+	- First beta version
+
+1.00	Sun Aug  6 07:11:35 2000
+
+	- Changed semantics of preconditions.
+	  Now only inherited if not defined in same class
+	  (this conforms with the notion of derived classes
+	  being allowed to weaken, but not strengthen preconditions).
+
+	- Added postconditions on SCALAR, ARRAY, and HASH attributes
+
+	- Added &value for attr conditions
+
+	- Removed &result -- now uses &value instead
+
+	- Added warning when explicit preconditions in derived
+	  class override inherited preconditions from base class.
+
+	- Added default ctor ('new') if none specified.
+
+	- Modified flyweight implementation (more robust, secure, and
+	  efficient)
+
+	- Modified ctors to refuse to instantiate classes with
+	  1+ abstract methods.
+
+	- Added class constructors and destructors
+
+	- Changed production code mechanism
+	  (now a separate, accelerated class: Class::Contract::Production)

@@ -1,0 +1,6 @@
+Changes
+lib/Class/Contract.pm
+lib/Class/Contract/Production.pm
+MANIFEST
+Makefile.PL
+demo.pl
