@@ -4,7 +4,7 @@ use vars qw( $VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
 require Exporter;
 use Carp;
 
-$VERSION = '1.12';
+$VERSION = '1.13';
 
 @ISA = qw(Exporter);
 @EXPORT = qw(contract ctor dtor attr method pre impl post invar inherits
@@ -390,7 +390,6 @@ sub generic_clone ($) {
   my $key  = \ my $undef;
   my $obj  = bless \$key, $ref;
   $data{$key} = _dcopy($data{$$self})  if exists $data{$$self};
-
   return $obj;
 }
 
@@ -562,14 +561,15 @@ localscope: {
   my %seen = ();
   my $depth = 0;
   sub _dcopy { # Dereference and return a deep copy of whatever's passed
-    my $ref = ref($_[0]) or  return $_[0];
+  	my ($r, $ref, $rval);
+    $ref = ref($_[0])   or return $_[0];
     exists $seen{$_[0]} and return $seen{$_[0]};
     $depth++;
 
-    my $r =
+    $r =
       ($_[0] =~ /${a}HASH$z/)   ? {map _dcopy($_), (%{$_[0]})}
     : ($_[0] =~ /${a}ARRAY$z/)  ? [map _dcopy($_), @{$_[0]} ]
-    : ($_[0] =~ /${a}SCALAR$z/) ? \${$_[0]}
+    : ($_[0] =~ /${a}SCALAR$z/) ? do { my $v = _dcopy(${$_[0]}); \$v }
     : ($_[0] =~ /${a}FORMAT$z/) ? $_[0]
     : ($_[0] =~ /${a}CODE$z/)   ? $_[0]
     : ($_[0] =~ /${a}Regexp$z/) ? $_[0]
@@ -577,7 +577,7 @@ localscope: {
     : ($_[0] =~ /${a}GLOB$z/)   ? $_[0]
     : $_[0]->can('clone') ? $_[0]->clone : $_[0];
 
-    my $rval = $ref =~ /^(HASH|ARRAY|SCALAR|GLOB|FORMAT|CODE|Regexp|REF)$/ 
+    $rval = $ref =~ /^(HASH|ARRAY|SCALAR|GLOB|FORMAT|CODE|Regexp|REF)$/ 
              ? $r
              : bless $r, $ref;
 

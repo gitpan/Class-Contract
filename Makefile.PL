@@ -5,8 +5,8 @@ WriteMakefile(
     'VERSION_FROM' => 'lib/Class/Contract.pm',
     ( $ExtUtils::MakeMaker::VERSION >= 5.43
       ? ()
-      : ('AUTHOR'        => 'Damian Conway (damian@conway.org)',
-	 'ABSTRACT_FROM' => 'lib/Class/Contract.pm')
+      : ('AUTHOR'        => 'Garrett Goebel (ggoebel@cpan.org)',
+	       'ABSTRACT_FROM' => 'lib/Class/Contract.pm')
     )
 );
 
