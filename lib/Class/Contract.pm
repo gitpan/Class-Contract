@@ -4,7 +4,7 @@ use vars qw( $VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
 require Exporter;
 use Carp;
 
-$VERSION = '1.11';
+$VERSION = '1.12';
 
 @ISA = qw(Exporter);
 @EXPORT = qw(contract ctor dtor attr method pre impl post invar inherits

@@ -89,9 +89,9 @@ contract {
     impl { $::test{'impl'} = \@_; 1 };
     post { $::test{'post'} = \@_; 1 };
   class method 'same';
-    pre  { $::test{'pre'}  = \@_; 1 };
-    impl { $::test{'impl'} = \@_; 1 };
-    post { $::test{'post'} = \@_; 1 };
+    pre  { @{$::test{'same_pre'}}  = (@_); 1 };
+    impl { @{$::test{'same_impl'}} = (@_); 1 };
+    post { @{$::test{'same_post'}} = (@_); 1 };
   class method 'modify_pre';
     pre  {
       shift  if $Class::Contract::VERSION < 1.10;
@@ -131,12 +131,15 @@ CODE
      'need'   => 'Extended Contracts',
      'code'   => <<'CODE');
 package main;
-undef %test;
+undef %::test;
 my @args = qw(1 a 2 b 4 c);
 Args->same(@args);
 
-my $fail;
-foreach (0..$#args) { $fail++  if $test{'pre'}->[$_] ne $test{'impl'}->[$_] }
+my $fail = 0;
+foreach (0..$#args) {
+  $fail++
+    if $::test{'same_pre'}->[$_] ne $::test{'same_impl'}->[$_]
+}
 $fail ? 0 : 1;
 CODE
 
@@ -291,22 +294,12 @@ CODE
 
 __DATA__
 
-::ok('desc'   => 'ancestor class method derived as object method',
-     'expect' => 1,
-     'need'   => 'additional thought',
-     'code'   => <<'CODE');
-1
-CODE
-
-::ok('desc'   => 'ancestor object method derived as class method',
-     'expect' => 1,
-     'need'   => 'additional thought',
-     'code'   => <<'CODE');
-1
-CODE
-
-__DATA__
-
+##ok('desc'   => 'ancestor class method derived as object method',
+#     'expect' => 1,
+#     'need'   => 'additional thought',
+#     'code'   => <<'CODE');
+#1
+#CODE
 
 # REQ:	Pre and post conditions for methods shall receive the same argument
 #       list as the implementation (Pre gets copy, Post identical)
@@ -315,29 +308,10 @@ __DATA__
 
 # ?:  Are there limits as to where &old, &self, and &value can be called?
 
-__DATA__
-
-# Notes:
-#
-#   The constructor implementation is invoked *after* the object
-#   is created and blessed into the class. It only needs to
-#   initialize the object returned by &self. Its return value is ignored.
-
-# REQ:  Methods and constructors may have as many pre and post conditions
-#       as they require.
-
-# REQ:  The return value of an invariant, pre, or post condition which fails
-#       shall be a false value;
-
 # REQ:  Invariant, pre, and post conditions may be declared optional.
 
 # REQ:  Optional condition checking may be switched on or off using the
 #       &check method (see examples below).
-
-# REQ:	The subroutine &self shall return a reference to the invoking
-#       object.
-
-# REQ:  $VERSION < 1.10 class/objref is also passed as the first argument
 
 # REQ:  The implementation's return value shall be available in the
 #	method's post condition(s) through the subroutine &value,
@@ -362,142 +336,3 @@ __DATA__
 # REQ:  ctor plays nicely with Overload.pm
 
 # REQ:  &value plays nicely with Overload.pm
-
-__DATA__
-
-package Client;
-my $nextid = 1;
-sub new { bless { id => $nextid++ }, $_[0] }
-
-package QueueBase;
-use Class::Contract;
-$value = contract {
-  abstract method 'append';
-  abstract method 'next';
-  
-  ctor 'new';
-  impl { print "QueueBase::new!\n" }
-};
-::ok($value,1);
-
-package ClientQueue;
-use Class::Contract;
-$value = contract  {
-  inherits QueueBase;
-
-  invar { print "appends: ", self->flags->{append}||0, "\n"; };
-  invar { print "nexts:   ", self->flags->{next}||0, "\n"; };
-  optional invar { @{self->queue}> 0 || undef };
-    failmsg "Empty queue detected at %s after call";
-
-  attr queue => ARRAY;
-  attr flags => HASH;
-  class attr 'first';
-  
-  method 'append';
-    optional pre  { print "first append\n" if ${self->first};  1; };
-    pre {
-      print "<<<0>>>\n";
-      return unless $_[1]->isa("Client");
-      print "<<<0.1>>>\n";
-      1;
-    };
-    post {
-      return unless @{self->queue} == @{old->queue} + 1;
-      return unless self->queue->[-1]{id} == $_[1]{id};
-      return 1;
-    };
-    impl {
-      print "<<<1>>>\n";
-      ${self->first} = 0;
-      print "<<<2>>>\n";
-      self->flags->{append}++;
-      print "<<<3>>>\n";
-      push @{self->queue}, $_[1];
-      print "<<<4>>>\n";
-    };
-
-  method 'next';
-    post {
-      return unless @{self->queue} == @{old->queue} - 1;
-      return 1;
-    };
-      failmsg "Expected removal of a single Client object";
-    impl {
-      self->flags->{next}++;
-      shift @{self->queue}
-    };
-
-  ctor 'new';
-    pre  {
-      shift;
-      return unless @_>=1 && !grep {!$_->isa('Client')} @_;
-      return 1;
-    };
-      failmsg "constructor must be passed an initial Client obj";
-    impl {
-      @{self->queue} = ( $_[1] );
-      ${self->first} = 1;
-    };
-};
-::ok($value,1);
-
-
-#=>
-package OrderedQueue;
-use Class::Contract;
-
-$value = contract {
-  inherits 'ClientQueue';
-
-  method 'append';
-    post  { return unless $_[1]{id} > self->queue->[-2]{id} };
-      failmsg "Client appended out of order";
-
-  ctor 'new';
-    impl { print "OrderedQueue::new!\n" };
-};
-::ok($value,1);
-
-
-
-
-
-
-
-package Main;
-use Class::Contract 'check';
-
-check my %contract => 0 for (__ALL__);		# TURN OFF ALL OPTIONAL CHECKS
-
-check %contract for ('ClientQueue');		# TURN ON OPTIONAL CHECKS 
-						# FOR ClientQueue ONLY
-
-print "[[[1]]]\n";
-my $client = Client->new();
-
-print "[[[2]]]\n";
-my $q = OrderedQueue->new($client);
-
-$client = Client->new();
-
-print "[[[3]]]\n";
-$q->append($client);
-
-print "[[[4]]]\n";
-$client = Client->new();
-my $client2 = Client->new();
-
-print "[[[5]]]\n";
-# $q->append($client2);
-$q->append($client);
-
-print "[[[6]]]\n";
-$client = "not a client";
-
-# $q->append($client);
-
-print $q->next(), "\n";
-print $q->next(), "\n";
-print $q->next(), "\n";
-print $q->next(), "\n";

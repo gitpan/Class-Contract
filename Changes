@@ -45,6 +45,13 @@ Future Plans and Ponderings:
   - Add support for <C>friend</C> classes?
 
 
+1.12    Tue Mar 13 08:53:06 2001
+
+  - Removed cruft from t/method.t test which was causing a false 
+    indication of test failures on some platforms. No code changes
+    to Class::Contract itself.
+
+
 1.11    Mon Mar 05 10:31:54 2001
 
   - Added support for clone method which may be used as you might imagine.
