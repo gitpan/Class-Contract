@@ -1,901 +1,891 @@
 package Class::Contract;
 use strict;
-use vars qw( @ISA @EXPORT $VERSION);
+use vars qw( $VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
 require Exporter;
 use Carp;
 
-$VERSION = '1.00';
+$VERSION = '1.10';
 
-@ISA = qw( Exporter );
-@EXPORT = qw ( contract abstract class attr method ctor dtor optional pre post impl invar inherits check self callstate failmsg value );
+@ISA = qw(Exporter);
+@EXPORT = qw(contract ctor dtor attr method pre impl post invar inherits
+             self value old class abstract private optional check callstate
+             failmsg dclone);
+@EXPORT_OK = qw(scalar_attrs array_attrs hash_attrs methods);
+%EXPORT_TAGS = (DEFAULT  => \@EXPORT,
+                EXTENDED => \@EXPORT_OK,
+                ALL      => [@EXPORT, @EXPORT_OK]);
 
 my %contract;
-my %data;
+my %data;  
 my %class_attr;
 my $current;
 my $msg_target;
 my %no_opt;		# NOT IN PRODUCTION
+# $Class::Contract::hook = \%data; # for testing GC # NOT IN PRODUCTION
 
 my @class_dtors;
+END { $_->()  foreach (@class_dtors) }
 
-END { for (@class_dtors) { $_->() } }
-
-sub contract(&)
-{
-	my ($spec) = @_;
-	$spec->();
-	_build_class(caller);
+sub contract(&) {
+  my ($spec) = @_;
+  $spec->();
+  return _build_class(caller);
 }
 
-sub check(\%;$)
-{
+sub check(\%;$) {
 # NOT IN PRODUCTION...
-	my $state = !$#_ ? 0 : $_[1] ? 1 : 0;
-	defined
-	    or croak "Usage:\n\tcheck \%sentinel"
-		   . ($#_ ? " => $state" : "")
-		   . " for ( \@classes );\n\n";
+  my $state = !$#_ ? 0 : $_[1] ? 1 : 0;
+  defined $_
+    or croak("Usage:\n\tcheck \%sentinel",
+	     ($#_ ? " => $state" : ""),
+	     " for ( \@classes );\n\n");
 
-	my $forclass = $_;
-	$_[0]->{$forclass} =
-		bless { prev=>$no_opt{$forclass}, forclass=>$forclass},
-			'Class::Contract::FormerState';
-	$no_opt{$forclass} = $state;
+  my $forclass = $_;
+  $_[0]->{$forclass} =
+    bless { 'prev'     => $no_opt{$forclass},
+	    'forclass' => $forclass }, 'Class::Contract::FormerState';
+  $no_opt{$forclass} = $state;
 # ...NOT IN PRODUCTION
 }
 
 # NOT IN PRODUCTION...
-sub Class::Contract::FormerState
-{
-	my ($self) = @_;
-	$no_opt{$self->{forclass}} = $self->{prev};
+sub Class::Contract::FormerState { # No function signature?
+  $no_opt{$_[0]->{'forclass'}} = $_[0]->{'prev'}; #  my ($self) = @_;
 }
 
-sub no_opt
-{
-	my ($classname) = @_;
-	return $no_opt{$classname} if exists $no_opt{$classname};
-	return $no_opt{__ALL__} if exists $no_opt{__ALL__};
-	return 0;
+sub no_opt { # my ($class) = @_;
+  return   exists $no_opt{$_[0]}     ? $no_opt{$_[0]}
+         : exists $no_opt{'__ALL__'} ? $no_opt{'__ALL__'}
+         : 0;
 }
 # ...NOT IN PRODUCTION
 
-sub _location
-{
-	return join ' line ', (caller(2))[1..2];
+sub _location { # scalar context returns file and line of external code
+                # array context returns package aka 'owner', file and line
+  my ($i, @c, $owner);
+  while (@c = (caller($i++))[0..2]) {
+    if ($c[0] !~ /^Class::Contract$/) {
+      $owner = $c[0]  if !$owner;
+      if ($c[1] !~ /^\(eval \d+\)$/) {
+			  return (wantarray ? $owner : (), join ' line ', @c[1,2]);
+			}
+    }
+  }
 }
 
-my %def_type =
-(
-	'attr'		=> 'SCALAR',
-	'method'	=> '',
-	'ctor'		=> '',
-	'dtor'		=> '',
+my %def_type = (
+  'attr'   => 'SCALAR',
+  'method' => '',
+  'ctor'   => '',
+  'dtor'   => ''
 );
 
-sub _member
-{
-	my ($kind, $name, $type) = @_;
-	my ($owner) = caller(3);
-	my $location = _location;
-	$name = "" unless $name;
+sub _member {
+  my ($kind, $name, $type) = @_;
+  my ($owner, $location) = _location;
+  $name = ''  unless $name;
 
-	if (defined $contract{$owner}{$kind}{$name})
-	{
-		croak "\u$kind ${owner}::$name redefined" if $name;
-		croak "Unnamed $kind redefined";
-	}
+  if (defined $contract{$owner}{$kind}{$name}) {
+    croak "\u$kind ${owner}::$name redefined"  if $name;
+    croak "Unnamed $kind redefined";
+  }
 	
-	$contract{$owner}{$kind}{$name} = $current =
-		bless { name	=> $name,
-			type	=> $type||$def_type{$kind},
-			gentype	=> $type||$def_type{$kind},	# NOT IN PRODUCTION
-			loc	=> $location,
-			shared  => 0,
-			abstract=> 0,
-			'pre'     => [],
-			'post'    => [],
-		      }, "Class::Contract::$kind";
+  $contract{$owner}{$kind}{$name} = $current =
+    bless {'name'     => $name,
+	   'type'     => $type || $def_type{$kind},
+	   'gentype'  => $type || $def_type{$kind},	# NOT IN PRODUCTION
+	   'loc'      => $location,
+	   'shared'   => 0,
+           'private'  => 0,
+	   'abstract' => 0,
+	   'pre'      => [], # NOT IN PRODUCTION
+	   'post'     => [], # NOT IN PRODUCTION
+	  }, "Class::Contract::$kind";
 
-	# NOT IN PRODUCTION...
-	$current->{gentype} = 'OBJECT'
-		unless $current->{gentype} =~ /\A(SCALAR|ARRAY|HASH)\z/;
-	# ...NOT IN PRODUCTION
-	return $current;
+  # NOT IN PRODUCTION...
+  $current->{'gentype'} = 'OBJECT'
+    unless $current->{'gentype'} =~ /\A(SCALAR|ARRAY|HASH)\z/;
+  # ...NOT IN PRODUCTION
+  return $current;
 }
 
-sub attr($;$)		{ _member('attr'   => @_) }
-sub method($)		{ _member('method' => @_) }
-sub ctor(;$)		{ _member('ctor'   => @_) }
-sub dtor(;$)		{ _member('dtor'   => @_) }
+sub attr($;$) { _member('attr'   => @_) }
+sub method($) { _member('method' => @_) }
+sub ctor(;$)  { _member('ctor'   => @_) }
+sub dtor()    { _member('dtor') }
 
-sub class
-{
-	my ($member) = @_;
-	$member->{shared} = 1;
-	return $member;
-}
+sub scalar_attrs(@) { map _member('attr', $_, 'SCALAR'), @_ }
+sub array_attrs(@)  { map _member('attr', $_, 'ARRAY'),  @_ }
+sub hash_attrs(@)   { map _member('attr', $_, 'HASH'),   @_ }
+sub methods(@)      { map _member('attr', $_),           @_ }
 
-sub abstract
-{
-	my ($member) = @_;
-	$member->{'abstract'} = 1;
-	return $member;
-}
+sub class(@)    { $_->{'shared'}   = 1  foreach(@_); @_ }
+sub abstract(@) { $_->{'abstract'} = 1  foreach(@_); @_ }
+sub private(@)  { $_->{'private'}  = 1  foreach(@_); @_ }
 
-my %def_msg =
-(
-	'pre'	=> "Pre-condition at %s failed",
-	'post'	=> "Post-condition at %s failed",
-	'invar'	=> "Class invariant at %s failed",
-	'impl'	=> undef,
+my %def_msg = (
+  'pre'	  => 'Pre-condition at %s failed',
+  'post'  => 'Post-condition at %s failed',
+  'invar' => 'Class invariant at %s failed',
+  'impl'  => undef
 );
 
-sub _current
-{
-	my ($field, $code) = @_;
-	croak "Unattached $field" unless defined $current;
-	croak "Attribute cannot have implementation"
-		if $current->isa('Class::Contract::attr')
-		&& $field eq 'impl';
+sub _current {
+  my ($field, $code) = @_;
+  croak "Unattached $field"  unless defined $current;
+  croak "Attribute cannot have implementation"
+    if $current->isa('Class::Contract::attr') && $field eq 'impl';
 
-	my $descriptor = bless {
-				code => $code,
-				opt  => 0,		# NOT IN PRODUCTION
-				msg  => $def_msg{$field},
-				owner=> scalar caller(1),
-				loc  => _location,
-			       }, 'Class::Contract::current';
-	if ($field eq 'impl' &&
-		!( $current->isa('Class::Contract::ctor') 
-		|| $current->isa('Class::Contract::dtor'))) 
-		{ $current->{$field} = $descriptor }
-	else
-		{ push @{$current->{$field}}, $descriptor }
+  my $descriptor = bless {
+    'code'  => $code,
+    'opt'   => 0,		# NOT IN PRODUCTION
+    'msg'   => $def_msg{$field},
+  }, 'Class::Contract::current';
+  @{$descriptor}{qw(owner loc)} = _location;
 
-	$msg_target = $descriptor;
+  if ($field eq 'impl' && !( $current->isa('Class::Contract::ctor') 
+      || $current->isa('Class::Contract::dtor'))) { 
+    $current->{$field} = $descriptor
+  } else {
+    push @{$current->{$field}}, $descriptor
+  }
+  
+  $msg_target = $descriptor;
 }
 
-sub failmsg		{ croak "Unattached failmsg" unless $msg_target;
-			  $msg_target->{msg} = shift; }
-
-sub pre(&)		{ return _current('pre'	=> @_) }
-sub post(&)		{ return _current('post'	=> @_) }
-sub impl(&)		{ return _current('impl' => @_) }
-
-sub optional
-{
-# NOT IN PRODUCTION...
-	my ($descriptor) = @_;
-	$descriptor->{opt} = 1;
-	return $descriptor;
-# ...NOT IN PRODUCTION
+sub failmsg {
+  croak "Unattached failmsg"  unless $msg_target;
+  $msg_target->{'msg'} = shift;
 }
 
+sub pre(&)  { _current('pre'  => @_) }
+sub post(&) { _current('post' => @_) }
+sub impl(&) { _current('impl' => @_) }
 
-sub invar(&) { &_invar }	# TO MAKE _location WORK CORRECTLY
+sub optional { # my (@descriptors) = @_;
+  $_->{'opt'} = 1  foreach(@_); @_ # NOT IN PRODUCTION
+}
 
-sub _invar
-{
-	my ($code) = @_;
-	my ($owner) = caller(3);
+sub invar(&) {
+  my ($code) = @_;
 
-	my $descriptor = {
-				code => $code,
-				opt  => 0,		# NOT IN PRODUCTION
-				msg  => $def_msg{'invar'},
-				owner=> $owner,
-				loc  => _location,
-			 };
+  my $descriptor = {
+    'code'  => $code,
+    'opt'   => 0,		# NOT IN PRODUCTION
+    'msg'   => $def_msg{'invar'},
+  };
+  @{$descriptor}{qw(owner loc)} = _location;
 
-	push @{$contract{$owner}{'invar'}}, $descriptor;
-	$msg_target = $descriptor;
+  push @{$contract{$descriptor->{'owner'}}{'invar'}}, $descriptor;
+  $msg_target = $descriptor;
 }
 
 
-sub inherits(@)		
-{
-	my ($owner) = caller(2);
-
-	push @{$contract{$owner}{parents}}, @_;
+sub inherits(@)	{
+  my ($owner) = _location;
+  foreach (@_) {
+    croak "Can't create circular reference in inheritence\n$_ is a(n) $owner" 
+      if $_->isa($owner)
+  }
+  push @{$contract{$owner}{'parents'}}, @_;
 }
 
+sub _build_class($) {
+  my ($class) = @_;
+  my $spec = $contract{$class};
+  _inheritance($class, $spec);
+  _attributes($class, $spec);
+  _methods($class, $spec);
+  _constructors($class, $spec);
+  _destructors($class, $spec);
 
-sub _build_class($)
-{
-	my ($classname) = @_;
-	
-	my $spec = $contract{$classname};
-
-	_inheritance($classname, $spec);
-	_attributes($classname, $spec);
-	_methods($classname, $spec);
-	_constructors($classname, $spec);
-	_destructors($classname, $spec);
-
-	1;
+  1;
 }
 
-localscope:{
+localscope: {
   my @context;
-  sub _set_context  { push @context, {__SELF__ => shift } }
-  sub _free_context { pop(@context) }
+  my %clear; # NOT IN PRODUCTION;
+  sub _set_context  {
+    push @context, {'__SELF__' => shift };
+
+    # NOT IN PRODUCTION...
+    my $proto = $context[-1]{__SELF__};
+    my ($class, $obj) = ref($proto)
+                      ? (ref($proto), $proto)
+                      : ($proto, undef);
+    return  if $class =~ /^Class::Contract::Old::_/;
+
+    my $class_old = "Class::Contract::Old::_$#context";
+    _pkg_copy($class, $class_old);
+    my $old = $obj ? $obj->dclone($class_old) : $class_old;
+    $context[-1]{__OLD__} = $old;
+    # ...NOT IN PRODUCTION
+  }
+  sub _free_context {
+    return pop @context
+  }
+  sub old() {
+    croak "No context. Can't call &old"  unless @context;
+    $context[-1]{__OLD__} # NOT IN PRODUCTION
+  }
 
   my @value;
   sub _set_value  { push @value, shift }
-  sub _free_value { my $res = pop @value;
-		    return unless defined $res;
-		    my $resref = ref $res;
-		    return $resref eq 'ARRAY'	? @$res
-			 : $resref eq 'HASH'	? %$res
-			 :                        $$res;
-		  }
-  sub value      { croak "Can't call &value " unless @value;
-		   return $value[-1] }
+  sub _free_value {
+    my $res = pop @value;
+    return  unless defined $res;
+    my $resref = ref $res;
+    return $resref eq 'ARRAY'  ? @$res
+         : $resref eq 'HASH'   ? %$res
+         :                       $$res;
+  }
+  sub value { 
+    croak "Can't call &value "  unless @value;
+    return $value[-1];
+#    return 
+#      ref($value[-1]) =~ /^(SCALAR|ARRAY|HASH|GLOB|FORMAT|CODE|Regexp|REF)$/
+#                       ?  $value[-1]
+#                       :  ${$value[-1]};
+  }
 
-  sub self()       { $context[-1]{__SELF__} }
+  sub self() {
+    if (@_) {
+      # NOT IN PRODUCTION...
+      croak "Usage:\tself(\$class_or_object)"
+	unless defined *{join(ref($_[0])||$_[0], '::')};
+      # ...NOT IN PRODUCTION
+      $context[-1]{__SELF__} = shift;
+    }
+    croak "No context. Can't call &self"  unless @context;
+    $context[-1]{__SELF__}
+  }
 
-  sub callstate()  { $context[-1]  }
+  sub callstate() {
+    croak "No context. Can't call &callstate"  unless @context;
+    return $context[-1];
+  }
 }
-		
-sub _inheritance
-{
-	my ($classname, $spec) = @_;
 
-	for my $ancestor ( @{$spec->{parents}||[]} )
-	{
-		my $parent = $contract{$ancestor} || next;
+sub _inheritance {                                  #  A  D  Invokation order
+# Inheritence is left-most depth-first. Destructors #  /\ |   
+# are called in reversed order as the constructors  # B C E    ctor: ABCDEF
+# Diamond patterns in inheritence are 'handled' by  #  \//     dtor: FEDCBA
+# looking for and skipping duplicate anonymous refs #   F
 
-		unshift @{$spec->{'invar'}},  @{$parent->{'invar'}||[]};
+  my ($classname, $spec) = @_;
+  my (%inherited_clause, %inherited_impl);
+  foreach my $ancestor ( reverse @{$spec->{'parents'} || [] } ) {
+    my $parent = $contract{$ancestor} || next;
+    foreach my $clause ( qw( attr method ctor dtor ) ) {
+      foreach my $name ( keys %{ $parent->{$clause} || {} } ) {
 
-		for my $attrname ( keys %{$parent->{'attr'}||{}} )
-		{
-			if (! defined $spec->{'attr'}{$attrname})
-			{
-				%{$spec->{'attr'}{$attrname}} =
-					%{$parent->{'attr'}{$attrname}||{}};
+				# Inherit each clause from ancestor unless defined
+				if (! defined $spec->{$clause}{$name} or $inherited_clause{$name}) {
+          $inherited_clause{$name}++;
+					%{$spec->{$clause}{$name}} = (%{$parent->{$clause}{$name}});
+					$spec->{$clause}{$name}{'pre'}  = []; # NOT IN PRODUCTION
+					next;
+				}
+
+				# Inherit ctor/dtor invokation from ancestors
+				if ($clause =~ /^(ctor|dtor)$/) {
+					if (defined $parent->{$clause}{$name}{'impl'}
+							and @{$parent->{$clause}{$name}{'impl'}}) {
+						my (@impl, %seen) = (@{$spec->{$clause}{$name}{'impl'}});
+						if (@impl) {
+							$seen{$impl[$_]} = $_  foreach (0..$#impl);
+							foreach my $item ( @{$parent->{$clause}{$name}{'impl'}} ) {
+								splice(@{$spec->{$clause}{$name}{'impl'}}, $seen{$item}, 1)
+			 					  if exists $seen{$item};
+							}
+						}
+						$clause eq 'ctor'
+						? unshift(@{$spec->{$clause}{$name}{'impl'}},
+											@{$parent->{$clause}{$name}{'impl'}})
+						: push(@{$spec->{$clause}{$name}{'impl'}},
+									 @{$parent->{$clause}{$name}{'impl'}});
+					}
+				}
+
+				# Get implementation from ancestor if derived but not redefined
+				if ($clause eq 'method') {
+					if (! defined $spec->{$clause}{$name}{'impl'}
+							or $inherited_impl{$name}) {
+						$inherited_impl{$name}++;
+						$spec->{$clause}{$name}{'impl'}=$parent->{$clause}{$name}{'impl'};
+					}
+				}
+				# NOT IN PRODUCTION...
+				# Inherit all post-conditions from ancestors
+				if (@{$parent->{$clause}{$name}{'post'}}) {
+					my (@post, %seen) = (@{$spec->{$clause}{$name}{'post'}});
+					if (@post) {
+						$seen{$post[$_]} = $_  foreach (0..$#post);
+						foreach my $item ( @{$parent->{$clause}{$name}{'post'}} ) {
+							splice(@{$spec->{$clause}{$name}{'post'}}, $seen{$item}, 1)
+							  if exists $seen{$item};
+						}
+					}
+					push(@{$spec->{$clause}{$name}{'post'}},
+							 @{$parent->{$clause}{$name}{'post'}});
+				}
+				# ...NOT IN PRODUCTION
+      }
+    }
+    # NOT IN PRODUCTION...
+    # Inherit all class invariants from ancestors
+    if (defined $parent->{'invar'} and @{$parent->{'invar'}}) {
+      defined $spec->{'invar'} or $spec->{'invar'} = [];
+      my (@invar, %seen) = (@{$spec->{'invar'}});
+      if (@invar) {
+				$seen{$invar[$_]} = $_  foreach (0..$#invar);
+				foreach (@{$parent->{'invar'}}) {
+					splice(@{$spec->{'invar'}}, $seen{$_}, 1)  if exists $seen{$_}
+				}
+			}
+      push @{$spec->{'invar'}}, @{$parent->{'invar'}};
+    } 
+    # ...NOT IN PRODUCTION
+  }
+
+  no strict 'refs';
+  unshift @{"${classname}::ISA"}, @{ $spec->{'parents'} || [] };
+}
+
+sub _attributes {
+  my ($classname, $spec) = @_;
+
+  while ( my ($name, $attr) = each %{$spec->{'attr'}} ) {
+    if ($attr->{'shared'}) {
+      my $ref = $class_attr{$classname}{$name} = 
+	      $attr->{'type'} eq 'ARRAY'  ? []
+      : $attr->{'type'} eq 'HASH'   ? {}
+      : $attr->{'type'} eq 'SCALAR' ? do { \ my $scalar }
+      : eval { $attr->{'type'}->new }
+        || croak "Unable to create $attr->{'type'} object ",
+                 "for class attribute $name";
+    }
+
+    localscope: {
+      no strict 'refs';
+      local $^W;
+      *{"${classname}::$name"} = sub {
+        croak(qq|Can\'t access object attr w/ class reference |,$attr->{'loc'})
+				unless ($attr->{'shared'} or ref($_[0]));
+
+				my $self = shift;
+				_set_context $attr->{'shared'} ? ref($self)||$self : $self; 
+				my $attr_ref = ($attr->{'shared'})
+				? $class_attr{$classname}{$name}
+				: $data{$$self}{$name};
+				_set_value $attr_ref;	
+				my $caller = caller;
+				croak "attribute ${classname}::$name inaccessible from package $caller"
+				unless $classname->isa($caller);
+
+				# NOT IN PRODUCTION...
+				my @fail = generic_check('pre', 'attr' => $name, $spec);
+				croak @fail  if @fail;
+				# ...NOT IN PRODUCTION
+				
+				_free_context;
 				
 				# NOT IN PRODUCTION...
-				$spec->{'attr'}{$attrname}{'pre'} = [];
-				$spec->{'attr'}{$attrname}{'post'} ||= [];
+				return "Class::Contract::Post$attr->{'gentype'}"->new(
+	        $attr->{'post'}, $attr_ref, $name,
+	      )  if @{$attr->{'post'}};
 				# ...NOT IN PRODUCTION
-				next;
-			}
-			
-			# NOT IN PRODUCTION...
-			unshift @{$spec->{'attr'}{$attrname}{'post'}},
-				@{$parent->{'attr'}{$attrname}{'post'}};
-			# ...NOT IN PRODUCTION
-		}
 
-		for my $methodname ( keys %{$parent->{'method'}||{}} )
-		{
-			if (! defined $spec->{'method'}{$methodname})
-			{
-				%{$spec->{'method'}{$methodname}} =
-					%{$parent->{'method'}{$methodname}||{}};
-				# NOT IN PRODUCTION...
-				$spec->{'method'}{$methodname}{'pre'} = [];
-				$spec->{'method'}{$methodname}{'post'} ||= [];
-				# ...NOT IN PRODUCTION
-				next;
-			}
-
-		
-			# NOT IN PRODUCTION...
-			unshift @{$spec->{'method'}{$methodname}{'post'}},
-				@{$parent->{'method'}{$methodname}{'post'}};
-			# ...NOT IN PRODUCTION
-
-			$spec->{'method'}{$methodname}{'impl'} =
-			$parent->{'method'}{$methodname}{'impl'}
-				unless defined
-				$spec->{'method'}{$methodname}{'impl'};
-
-		}
-		for my $ctorname ( keys %{$parent->{'ctor'}||{}} )
-		{
-			if (! defined $spec->{'ctor'}{$ctorname})
-			{
-				%{$spec->{'ctor'}{$ctorname}} =
-					%{$parent->{'ctor'}{$ctorname}||{}};
-				# NOT IN PRODUCTION...
-				$spec->{'ctor'}{$ctorname}{'pre'} = [];
-				$spec->{'ctor'}{$ctorname}{'post'} ||= [];
-				# ...NOT IN PRODUCTION
-				next;
-			}
-
-			# NOT IN PRODUCTION...
-			unshift @{$spec->{'ctor'}{$ctorname}{'post'}},
-				@{$parent->{'ctor'}{$ctorname}{'post'}};
-			# ...NOT IN PRODUCTION
-
-                        unshift @{$spec->{'ctor'}{$ctorname}{'impl'}},
-                                @{$parent->{'ctor'}{$ctorname}{'impl'}};
-                }
-
-                for my $dtorname ( keys %{$parent->{'dtor'}||{}} )
-                {
-
-                        if (! defined $spec->{'dtor'}{$dtorname})
-                        {
-                                %{$spec->{'dtor'}{$dtorname}} =
-                                        %{$parent->{'dtor'}{$dtorname}||{}};
-				# NOT IN PRODUCTION...
-                                $spec->{'dtor'}{$dtorname}{'pre'} = [];
-                                $spec->{'dtor'}{$dtorname}{'post'} ||= [];
-				# ...NOT IN PRODUCTION
-                                next;
-                        }
-
-			# NOT IN PRODUCTION...
-                        unshift @{$spec->{'dtor'}{$dtorname}{'post'}},
-                                @{$parent->{'dtor'}{$dtorname}{'post'}};
-			# ...NOT IN PRODUCTION
-
-                        push @{$spec->{'dtor'}{$dtorname}{'impl'}},
-                             @{$parent->{'dtor'}{$dtorname}{'impl'}};
-                }
-
-        }
-
-        no strict 'refs';
-        unshift @{"${classname}::ISA"}, @{$spec->{parents}||[]};
+				_free_value;
+				return $attr_ref;
+      }
+    }
+  }
 }
 
-sub _attributes
-{
-        my ($classname, $spec) = @_;
+sub _methods {
+  my ($classname, $spec) = @_;
 
-        while ( my ($name, $attr) = each %{$spec->{'attr'}} )
-        {
-                if ($attr->{shared})
-                {
-                        my $ref = $class_attr{$classname}{$name} = 
-                                $attr->{type} eq 'ARRAY'  ? []
-                              : $attr->{type} eq 'HASH'   ? {}
-                              : $attr->{type} eq 'SCALAR' ? do { \ my $scalar }
-                              : eval { $attr->{type}->new }
-                                || croak "Unable to create $attr->{type} object for class attribute $name";
-                }
-                localscope:{
-                        no strict 'refs';
-                        local $^W;
-                        *{"${classname}::$name"} = sub
-                        {
-                                _set_context @_;
-                                my $attr_ref = ($attr->{shared})
-                                                ? $class_attr{$classname}{$name}
-                                                : $data{$_[0]}{$name};
-                                _set_value $attr_ref;	
-                                my $caller = caller;
-                                croak "attribute ${classname}::$name inaccessible from package $caller"
-                                        unless $classname->isa($caller);
+  while ( my ($name, $method) = each %{$spec->{'method'}} ) {
+    $spec->{'abstract'} ||= $method->{'abstract'};
+    unless ($method->{'impl'}) {
+      if ($method->{'abstract'}) {
+				$method->{'impl'} = {'code' => sub {
+					croak "Can't call abstract method ${classname}::$name"
+				} }
+      } else {
+				croak qq{No implementation for method $name at $method->{'loc'}.\n},
+	      qq{(Did you forget to declare it 'abstract'?)\n}
+      }
+    }
 
+    local_scope: {
+      local $^W;
+      no strict 'refs';
+      *{"${classname}::$name"} = sub {
+				my $caller = caller;
+				croak "private method ${classname}::$name inaccessible from $caller"
+				  if $method->{'private'} and not $caller->isa($classname);
+
+				my $self = shift;
+				_set_context $method->{'shared'} ? ref($self)||$self : $self; 
+	
 				# NOT IN PRODUCTION...
-                                my @fail = generic_precheck('attr'=>$name,$spec);
-                                croak @fail if @fail;
+        croak(qq|Can\'t invoke object method w/ class name |, $method->{'loc'})
+				  unless ($method->{'shared'} or ref($self));
+
+				my $no_opt = no_opt($classname);
+				my @fail = generic_check('pre', 'method' => $name, $spec, @_);
+				croak @fail  if @fail;
 				# ...NOT IN PRODUCTION
 
-                                _free_context;
-
-				# NOT IN PRODUCTION...
-                                return "Class::Contract::Post$attr->{gentype}"->new(
-                                        $attr->{'post'}, $attr_ref, $name,
-                                       )
-                                        if @{$attr->{'post'}};
-				# ...NOT IN PRODUCTION
-                                _free_value;
-                                return $attr_ref;
-                        }
-                }
-        }
-}
-
-sub _methods
-{
-        my ($classname, $spec) = @_;
-
-        while ( my ($name, $method) = each %{$spec->{'method'}} )
-        {
-                $spec->{'abstract'} ||= $method->{'abstract'};
-                unless ($method->{'impl'})
-                {
-                        if ($method->{'abstract'})
-                        {
-                                $method->{'impl'} = 
-                                { code => sub
-                                    {
-                                        croak "Can't call abstract method ${classname}::$name"
-                                    }
-                                }
-                        }
-                        else
-                        {
-                                croak qq{No implementation for method $name at $method->{loc}.\n(Did you forget to declare it 'abstract'?)\n}
-                        }
-                }
-
-                local_scope:{
-                        local $^W;
-                        no strict 'refs';
-                        *{"${classname}::$name"} = sub
-                        {
-
-                                _set_context @_;
-
-				# NOT IN PRODUCTION...
-                                my $no_opt = no_opt($classname);
-
-                                my @fail = generic_precheck('method'=>$name,$spec,@_);
-                                croak @fail if @fail;
-				# ...NOT IN PRODUCTION
-
-                                if (wantarray)  { _set_value
-				[$method->{'impl'}{code}->(@_)] }
-                                else            { my $res = $method->{'impl'}{code}->(@_); _set_value \$res }
-
+				if (wantarray) {
+					_set_value [$method->{'impl'}{'code'}->(@_)] 
+				} else { 
+					my $res = $method->{'impl'}{'code'}->(@_);
+					_set_value \$res 
+				}
 				
 				# NOT IN PRODUCTION...
-                                for my $postspec ( @{$method->{'post'}} )
-                                {
-                                    next if $postspec->{opt}
-                                         && no_opt $postspec->{owner};
-                                    croak(sprintf $postspec->{msg}, $postspec->{loc})
-                                        unless ( $postspec->{code}->(@_) );
-                                }
-
-                                if (caller ne $classname)
-                                {
-                                        for my $invarspec (
-					@{$contract{$classname}{'invar'}} )
-                                        {
-                                            next if $invarspec->{opt}
-                                                 && no_opt $invarspec->{owner};
-                                            croak(sprintf $invarspec->{msg}, $invarspec->{loc})
-                                                unless $invarspec->{code}->(@_);
-                                        }
-                                }
+				generic_check('post',  'method' => $name, $spec, @_);
+				generic_check('invar', 'method' => $name, $spec, @_)
+				  if (caller ne $classname);
 				# ...NOT IN PRODUCTION
 
-                                _free_context;
-                                return _free_value;
-                        }
-                }
-        }
+				_free_context;
+				return _free_value;
+      }
+    }
+  }
 }
 
 # NOT IN PRODUCTION...
-sub generic_precheck
-{
-        my ($kind, $name, $class_spec, @args) = @_;
-        my @prespecs = @{$class_spec->{$kind}{$name}{'pre'}||[]};
-        my @errors;
+sub generic_check {
+  return  if (ref(self)||self) =~ /^Class::Contract::Old::_/;
 
-        for my $prespec ( @prespecs )
-        {
-            next if $prespec->{opt} && no_opt($prespec->{owner})
-                 || $prespec->{code}->(@args);
-            push @errors, sprintf($prespec->{msg},$prespec->{loc})."\n";
-        }
-        
-        return if @prespecs && !@errors;
+  my ($type, $kind, $name, $class_spec, @args) = @_;
+  my @specs = @{$class_spec->{$kind}{$name}{$type}||[]};
+  my @errors;
 
-        # OTHERWISE SATISFY AT LEAST ONE PARENT?
-        for my $parent ( @{$class_spec->{parents}||[]} )
-        {
-                my @par_err = generic_precheck($kind, $name, $contract{$parent}, @args);
-                return unless @par_err;
-                push @errors, @par_err;
-        }
-        return @errors;
+  foreach my $spec ( @specs ) {
+    next  if $spec->{'opt'} && no_opt($spec->{'owner'})
+      || $spec->{'code'}->(@args);
+    push @errors, sprintf($spec->{'msg'},$spec->{'loc'})."\n";
+  }
+  
+  @errors ? croak @errors : return   unless $type eq 'pre';
+  return  if @specs && !@errors;
+
+  # OTHERWISE SATISFY AT LEAST ONE PARENT?
+  foreach my $ancestor ( @{$class_spec->{'parents'}||[]} ) {
+    my $parent = $contract{$ancestor};
+    next  unless exists $parent->{$kind}{$name};
+		my $has_pre = scalar @{$parent->{$kind}{$name}{'pre'}};
+    unless ($has_pre) {
+			foreach my $p (@{$parent->{'parents'}||[]}) {
+				$has_pre++ and last  if _hasa($p, $kind, $name, 'pre');
+			}
+		}
+
+		if ($has_pre) {
+			my @par_err = generic_check($type, $kind, $name, $parent, @args);
+			return  unless @par_err;
+			push @errors, @par_err;
+		}
+  }
+  return @errors;
+}
+
+sub _hasa {
+  my ($class, $kind, $name, $type) = (@_);
+  return 0  unless defined $contract{$class}{$kind}{$name};
+
+  my $has = @{$contract{$class}{$kind}{$name}{$type} || []} ? 1 : 0;
+  unless ($has) {
+		foreach my $ancestor (@{$contract{$class}{'parents'} || []}) {
+			$has++ and last  if _hasa($ancestor, $kind, $name, $type);
+		}
+	}
+	return $has;
 }
 # ...NOT IN PRODUCTION
 
-sub generic_ctor
-{
-        my ($class) = @_;
+sub generic_ctor {
+  my ($class) = @_;
 
-        croak "Class $class has abstract methods. Can't create $class object"
-                if $contract{$class}{'abstract'};
+  croak "Class $class has abstract methods. Can't create $class object"
+    if $contract{$class}{'abstract'};
 
-        my $key;
-        bless \$key, $class;
+  my $key = \ my $undef;
+  my $obj = \ $key;
+  bless $obj, $class;
 
-        my $attr = $contract{$class}{'attr'};
+  my $attr = $contract{$class}{'attr'};
         
-        for my $attrname ( keys %$attr )
-        {
-            unless ($attr->{$attrname} && $attr->{$attrname}{shared})
-            {
-                my $ref = $data{\$key}{$attrname} = 
-                        $attr->{$attrname}{type} eq 'ARRAY'  ? []
-                      : $attr->{$attrname}{type} eq 'HASH'   ? {}
-                      : $attr->{$attrname}{type} eq 'SCALAR' ? do { \my $scalar }
-                      : eval { $attr->{$attrname}{type}->new }
-                        || croak "Unable to create $attr->{$attrname}{type} object for attribute $attrname";
-            }
-                                
-        }
+  foreach my $attrname ( keys %$attr ) {
+    unless ($attr->{$attrname} && $attr->{$attrname}{'shared'}) {
+      my $ref = $data{$key}{$attrname}
+			= $attr->{$attrname}{'type'} eq 'ARRAY'  ? []
+			: $attr->{$attrname}{'type'} eq 'HASH'   ? {}
+      : $attr->{$attrname}{'type'} eq 'SCALAR' ? do { \my $scalar }
+      : eval { $attr->{$attrname}{type}->new }
+      || croak "Unable to create $attr->{$attrname}{'type'} ",
+			         "object for attribute $attrname";
+    }
+  }
 
-        return \$key;
+  return $obj;
 }
 
-sub _constructors
-{
-        my ($classname, $spec) = @_;
-        my $noctor = 1;
+sub _constructors {
+  my ($classname, $spec) = @_;
+  my $noctor = 1;
 
-        while ( my ($name, $ctor) = each %{$spec->{'ctor'}} )
-        {
-                $noctor &&= $ctor->{shared}
-        }
+  while ( my ($name, $ctor) = each %{$spec->{'ctor'}} ) {
+    $noctor &&= $ctor->{'shared'}
+  }
 
-        $spec->{'ctor'}{new} = 
-                 bless { name     => 'new',
-                         shared   => 0,
-                         'abstract' => 0,
-                         loc      => '<implicit>'
-                       }, 'Class::Contract::ctor'
-                                if $noctor;
+  $spec->{'ctor'}{'new'} = bless {
+    'name'     => 'new',
+    'shared'   => 0,
+    'abstract' => 0,
+    'loc'      => '<implicit>'
+  }, 'Class::Contract::ctor'
+    if $noctor;
 
-        while ( my ($name, $ctor) = each %{$spec->{'ctor'}} )
-        {
-                $spec->{'abstract'} ||= $ctor->{'abstract'};
+  while ( my ($name, $ctor) = each %{$spec->{'ctor'}} ) {
+    $spec->{'abstract'} ||= $ctor->{'abstract'};
 
-                if ($ctor->{shared})
-                {
-                    localscope:{
-                        local $^W;
-                        no strict 'refs';
-                        my $classctor = sub
-                        {
-                                my ($self) = @_;
-                                $self = ref $self if ref $self;
-
-                                _set_context $self;
+    if ($ctor->{'shared'}) {
+      localscope: {
+				local $^W;
+				no strict 'refs';
+				my $classctor = sub {
+					my $self = shift;
+					_set_context ref($self)||$self; 
                                 
-				# NOT IN PRODUCTION...
-                                my @fail = generic_precheck('ctor'=>$name,$spec,@_);
-                                croak @fail if @fail;
-				# ...NOT IN PRODUCTION
+					# NOT IN PRODUCTION...
+					my @fail = generic_check('pre', 'ctor' => $name, $spec, @_);
+					croak @fail  if @fail;
+					# ...NOT IN PRODUCTION
 
-                                for my $implspec ( @{$ctor->{'impl'}} )
-                                {
-                                        my $res = $implspec->{code}->(@_);
-                                        _set_value \$res;
-                                }
+					foreach my $implspec ( @{$ctor->{'impl'}} ) {
+						my $res = $implspec->{'code'}->(@_);
+						_set_value \$res;
+					}
 
-				# NOT IN PRODUCTION...
-                                for my $postspec ( @{$ctor->{'post'}} )
-                                {
-                                    next if $postspec->{opt}
-                                         && no_opt $postspec->{owner};
-                                    croak(sprintf $postspec->{msg}, $postspec->{loc})
-                                        unless ( $postspec->{code}->(@_) );
-                                }
+					# NOT IN PRODUCTION...
+					generic_check('post', 'ctor' => $name, $spec, @_);
+					generic_check('invar','ctor' => $name, $spec, @_)
+					  if (caller ne $classname);
+					# ...NOT IN PRODUCTION
 
-                                if (caller ne $classname)
-                                {
-                                        for my $invarspec (
-					@{$contract{$classname}{'invar'}} )
-                                        {
-                                            next if $invarspec->{opt}
-                                                 && no_opt $invarspec->{owner};
-                                            croak(sprintf $invarspec->{msg}, $invarspec->{loc})
-                                                unless $invarspec->{code}->(@_);
-                                        }
-                                }
-				# ...NOT IN PRODUCTION
-
-                                _free_context;
-                                return _free_value;
-                        };
-                        $classname->$classctor();
-                        *{"${classname}::$name"} = $classctor if $name;
-                    }
-                }
-                else
-                {
-                    localscope:{
-                        local $^W;
-                        no strict 'refs';
-                        *{"${classname}::$name"} = sub
-                        {
-                                my ($class) = @_;
-
-                                my $self = 
-                                        Class::Contract::generic_ctor($class);
-                                _set_context $self;
-                                
-				# NOT IN PRODUCTION...
-                                my @fail = generic_precheck('ctor'=>$name,$spec,@_);
-                                croak @fail if @fail;
-				# ...NOT IN PRODUCTION
-
-                                for my $implspec ( @{$ctor->{'impl'}} )
-                                {
-                                        if (wantarray)  { _set_value [$implspec->{code}->(@_)] }
-                                        else            { my $res = $implspec->{code}->(@_); _set_value \$res }
-                                }
-
-				# NOT IN PRODUCTION...
-                                for my $postspec ( @{$ctor->{'post'}} )
-                                {
-                                    next if $postspec->{opt}
-                                         && no_opt $postspec->{owner};
-                                    croak(sprintf $postspec->{msg}, $postspec->{loc})
-                                        unless ( $postspec->{code}->(@_) );
-                                }
-
-                                if (caller ne $classname)
-                                {
-                                        for my $invarspec (
-					@{$contract{$classname}{'invar'}} )
-                                        {
-                                            next if $invarspec->{opt}
-                                                 && no_opt $invarspec->{owner};
-                                            croak(sprintf $invarspec->{msg}, $invarspec->{loc})
-                                                unless $invarspec->{code}->(@_);
-                                        }
-                                }
-				# ...NOT IN PRODUCTION
-
-                                _free_value;
-                                _free_context;
-                                return $self;
-                        }
-                    }
-                }
-        }
+					_free_context;
+					return _free_value;
+				};
+				$classname->$classctor();
+				*{"${classname}::$name"} = $classctor  if $name;
+      }
+    } else {
+      localscope:{
+				local $^W;
+				no strict 'refs';
+				*{"${classname}::$name"} = sub {
+          my $proto = shift;
+					my $class = ref($proto)||$proto;
+					my $self = Class::Contract::generic_ctor($class);
+					_set_context $self;
+	    
+					# NOT IN PRODUCTION...
+					my @fail = generic_check('pre', 'ctor' => $name, $spec, @_);
+					croak @fail  if @fail;
+					# ...NOT IN PRODUCTION
+	    
+					foreach my $implspec ( @{$ctor->{'impl'}} ) {
+						if (wantarray) {
+							_set_value [$implspec->{'code'}->(@_)] 
+						} else {
+							my $res = $implspec->{'code'}->(@_);
+							_set_value \$res
+						}
+					}
+	    
+					# NOT IN PRODUCTION...
+					generic_check('post', 'ctor' => $name, $spec, @_);
+					generic_check('invar','ctor' => $name, $spec, @_)
+					  if (caller ne $classname);
+					# ...NOT IN PRODUCTION
+	    
+					_free_value;
+					_free_context;
+					return $self;
+				}
+      }
+    }
+  }
 }
 
-sub _destructors
-{
-        my ($classname, $spec) = @_;
-
-        my $dtorcount = 0;
-
-        while ( my ($name, $dtor) = each %{$spec->{'dtor'}} )
-        {
-                $spec->{'abstract'} ||= $dtor->{'abstract'};
-
-                if ($dtor->{shared})
-                {
-                    localscope:{
-                        local $^W;
-                        no strict 'refs';
-                        my $classdtor = sub
-                        {
-                                my ($self) = @_;
-                                $self = ref $self if ref $self;
-
-                                _set_context $self;
-                                
-				# NOT IN PRODUCTION...
-                                my @fail = generic_precheck('dtor'=>$name,$spec,@_);
-                                croak @fail if @fail;
-				# ...NOT IN PRODUCTION
-
-                                for my $implspec ( @{$dtor->{'impl'}} )
-                                {
-                                        my $res = $implspec->{code}->(@_);
-                                        _set_value \$res;
-                                }
-
-				# NOT IN PRODUCTION...
-                                for my $postspec ( @{$dtor->{'post'}} )
-                                {
-                                    next if $postspec->{opt}
-                                         && no_opt $postspec->{owner};
-                                    croak(sprintf $postspec->{msg}, $postspec->{loc})
-                                        unless ( $postspec->{code}->(@_) );
-                                }
-				# ...NOT IN PRODUCTION
-
-                                _free_context;
-                                return _free_value;
-                        };
-                        push @class_dtors, sub { $classname->$classdtor() };
-                        *{"${classname}::$name"} = $classdtor if $name;
-                    }
-                }
-                else
-                {
-                    croak "Class $classname has too many destructors"
-                        if $dtorcount++;
-
-                    localscope:{
-                        local $^W;
-                        no strict 'refs';
-                        my $objdtor = sub
-                        {
-                                my ($self) = @_;
-
-                                _set_context $self;
-                                
-				# NOT IN PRODUCTION...
-                                my @fail = generic_precheck('dtor'=>$name,$spec,@_);
-                                croak @fail if @fail;
-				# ...NOT IN PRODUCTION
-
-                                for my $implspec ( @{$dtor->{'impl'}} )
-                                {
-                                        if (wantarray)  { _set_value [$implspec->{code}->(@_)] }
-                                        else            { my $res = $implspec->{code}->(@_); _set_value \$res }
-                                }
-
-				# NOT IN PRODUCTION...
-                                for my $postspec ( @{$dtor->{'post'}} )
-                                {
-                                    next if $postspec->{opt}
-                                         && no_opt $postspec->{owner};
-                                    croak(sprintf $postspec->{msg}, $postspec->{loc})
-                                        unless ( $postspec->{code}->(@_) );
-                                }
-
-                                if (caller ne $classname)
-                                {
-                                        for my $invarspec (
-					@{$contract{$classname}{'invar'}} )
-                                        {
-                                            next if $invarspec->{opt}
-                                                 && no_opt $invarspec->{owner};
-                                            croak(sprintf $invarspec->{msg}, $invarspec->{loc})
-                                                unless $invarspec->{code}->(@_);
-                                        }
-                                }
-				# ...NOT IN PRODUCTION
-
-                                _free_value;
-                                _free_context;
-                                return;
-                        };
-                        *{"${classname}::$name"} = $objdtor if $name;
-                        *{"${classname}::DESTROY"} = 
-                                sub { $_[0]->$objdtor(); delete $data{$_[0]} };
-                    }
-                }
-        }
+sub _destructors {
+  my ($classname, $spec) = @_;
+  my $dtorcount = 0;
+	
+  while ( my ($name, $dtor) = each %{$spec->{'dtor'}} ) {
+    $spec->{'abstract'} ||= $dtor->{'abstract'};
+		
+    if ($dtor->{'shared'}) {
+      localscope: {
+				local $^W;
+				no strict 'refs';
+				my $classdtor = sub {
+					croak "Illegal explicit invokation of class dtor", $dtor->{'loc'}
+					  if caller() ne 'Class::Contract';
+					my $self = shift;
+					$self = ref $self  if ref $self;
+					
+					_set_context $self;
+					
+					# NOT IN PRODUCTION...
+					my @fail = generic_check('pre', 'dtor' => $name, $spec, @_);
+					croak @fail  if @fail;
+					# ...NOT IN PRODUCTION
+					
+					foreach my $implspec ( @{$dtor->{'impl'}} ) {
+						my $res = $implspec->{'code'}->(@_);
+						_set_value \$res;
+					}
+					
+					generic_check('post', 'dtor' => $name, $spec, @_);# NOT IN PRODUCTION
+					_free_context;
+					return _free_value;
+				};
+				
+				push @class_dtors, sub { $classname->$classdtor() };
+      }
+    } else {
+      croak "Class $classname has too many destructors"  if $dtorcount++;
+			
+      localscope: {
+				local $^W;
+				no strict 'refs';
+				my $objdtor = sub {
+					croak "Illegal explicit invokation of object dtor", $dtor->{'loc'}
+					  if caller() ne 'Class::Contract';
+					
+					my $self = shift;
+					_set_context $self;
+					
+					# NOT IN PRODUCTION...
+					my @fail = generic_check('pre', 'dtor' => $name, $spec, @_);
+					croak @fail  if @fail;
+					# ...NOT IN PRODUCTION
+					
+					foreach my $implspec ( @{$dtor->{'impl'}} ) {
+						if (wantarray) {
+							_set_value [$implspec->{'code'}->(@_)]
+						} else {
+							my $res = $implspec->{'code'}->(@_);
+							_set_value \$res
+						}
+					}
+					
+					# NOT IN PRODUCTION...
+					generic_check('post',  'dtor' => $name, $spec, @{[@_]});
+					generic_check('invar', 'dtor' => $name, $spec, @{[@_]})
+					if (caller ne $classname);
+					# ...NOT IN PRODUCTION
+					
+					_free_value;
+					_free_context;
+					return;
+				};
+				
+				*{"${classname}::DESTROY"} = sub {
+					$_[0]->$objdtor();
+					delete $data{${$_[0]}};
+			  };
+		  }
+	  }
+  }
+  unless (defined &{"${classname}::DESTROY"}) {
+    local $^W;
+    no strict 'refs';
+    *{"${classname}::DESTROY"} = sub { delete $data{${$_[0]}} };
+  }
 }
 
+localscope: {
+  my ($a,$z) = (qr/(^|^.*?=)/, qr/\(.*?\)$/);
+  my %seen = ();
+  my $depth = 0;
+  sub _dcopy { # Dereference and return a deep copy of whatever's passed
+    my $ref = ref($_[0]) or return $_[0];
+    exists $seen{$_[0]} and return $seen{$_[0]};
+    $depth++;
+
+    my $r =
+      ($_[0] =~ /${a}HASH$z/)   ? {map _dcopy($_), (%{$_[0]})}
+    : ($_[0] =~ /${a}ARRAY$z/)  ? [map _dcopy($_), @{$_[0]} ]
+    : ($_[0] =~ /${a}SCALAR$z/) ? \${$_[1]}
+    : ($_[0] =~ /${a}FORMAT$z/) ? $_[0]
+    : ($_[0] =~ /${a}CODE$z/)   ? $_[0]
+    : ($_[0] =~ /${a}Regexp$z/) ? $_[0]
+    : ($_[0] =~ /${a}REF$z/)    ? $_[0]
+    : ($_[0] =~ /${a}GLOB$z/)   ? $_[0]
+    : $_[0]->can('dclone') ? $_[0]->dclone : $_[0];
+
+    my $rval = $ref =~ /^(HASH|ARRAY|SCALAR|GLOB|FORMAT|CODE|Regexp|REF)$/ 
+             ? $r
+             : bless $r, $ref;
+
+    --$depth 
+      and $seen{$_[0]} = $rval
+      or  %seen = (); 
+
+    return $rval;
+  }
+}
+
+sub dclone ($;$) {
+  my ($self, $alt_class) = (@_);
+  my $class = ref($self);
+  croak "usage: \$object->dclone -Invalid arg $self"
+    unless ($class and 
+	    $class !~ /^(HASH|ARRAY|SCALAR|GLOB|FORMAT|CODE|Regexp|REF)$/);
+  my $key  = \ my $undef;
+  my $safe = _dcopy($data{$$self});
+  my $obj  = bless \$key, $alt_class ? $alt_class : $class;
+  $data{$key} = $safe;
+  return $obj;
+}
 
 # NOT IN PRODUCTION...
-sub Class::Contract::PostOBJECT::new
-{
-        my ($class, $posts, $original, $name) = @_;
-        my $objclass = ref $original;
-        carp "Warning: cannot check post-condition" .
-             (@$posts==1?"":'s') .
-             " on $objclass attribute '$name'"
-                if $^W;
-        _free_value;
-        return $original;
+sub _pkg_copy ($$) { # $from_package, $to_package
+  no strict 'refs';
+  defined *{$_[0] . '::'}
+    or croak "_pkg_copy() Can't clone from non-existant package $_[0]";
+  defined *{$_[1] . '::'} and *{$_[1] . '::'} = {};
+  
+  foreach my $glob (values %{*{$_[0] . '::'}}) {
+    my ($varname) = $glob =~ /^\*$_[0]::(.*)/ or next;
+    foreach my $slot (qw(SCALAR ARRAY HASH CODE FORMAT)) {
+      my $ref = _dcopy(*{"$_[0]::$varname"}{$slot});
+      *{"$_[1]::$varname"} = $ref  if defined $ref;
+    }
+  }
+}
+
+sub _pkg_clear ($) {
+  no strict 'refs';
+  my ($package) = shift;
+  my $stash = *{$package . '::'}{HASH};
+  foreach my $name (keys %$stash) {
+    $name = join('::', $package, $name);
+    print "undefine $name\n";
+    undef $$name;
+    undef @$name;
+    undef %$name;
+    
+    undef &$name;
+    undef *$name;
+  }
+  undef %{$package . '::'};
+}
+
+sub Class::Contract::PostOBJECT::new {
+  my ($class, $posts, $original, $name) = @_;
+  my $objclass = ref $original;
+  carp("Warning: cannot check post-condition",
+       (@$posts==1?"":'s'),
+       " on $objclass attribute '$name'")
+    if $^W;
+  _free_value;
+  return $original;
 }
 
 package Class::Contract::PostSCALAR;
 
-sub new
-{
-        my $proxy;
-        tie $proxy, 'Class::Contract::PostSCALAR', @_;
-        return \$proxy;
+sub new {
+  my $proxy;
+  tie $proxy, 'Class::Contract::PostSCALAR', @_;
+  return \$proxy;
 }
 
-sub TIESCALAR
-{
-        my ($class, $self, $postsubs, $original) = @_;
-        bless   { 'orig' => $original,
-                  'post' => $postsubs,
-                }, $class;
+sub TIESCALAR {
+  my ($class, $self, $postsubs, $original) = @_;
+  return bless {
+		'orig' => $original,
+		'post' => $postsubs,
+	}, $class;
 }
 
-sub FETCH       { return ${$_[0]->{orig}} }
-sub STORE       { ${$_[0]->{orig}} = $_[1] }
+sub FETCH { return ${$_[0]->{'orig'}} }
+sub STORE { ${$_[0]->{'orig'}} = $_[1] }
 
-sub DESTROY
-{
-        my ($self) = @_;
-        for my $postspec ( @{$self->{'post'}} )
-        {
-            next if $postspec->{opt}
-                 && no_opt $postspec->{owner};
-            unless ($postspec->{code}->(@_))
-                { printf STDERR Carp::shortmess
-                        sprintf "$postspec->{msg}", $postspec->{loc};
-                  Class::Contract::_free_value;
-                  exit }
-        }
-        Class::Contract::_free_value;
+sub DESTROY {
+  Class::Contract::generic_check('post', 'attr', @{self()}{qw(orig spec)}, @_);
+  Class::Contract::_free_value();
 }
 
 package Class::Contract::PostARRAY;
 
-sub new
-{
-        my @proxy;
-        tie @proxy, 'Class::Contract::PostARRAY', @_;
-        if ($_[3]) { bless \@proxy, ref $_[2] }
-        return \@proxy;
+sub new {
+  my @proxy;
+  tie @proxy, 'Class::Contract::PostARRAY', @_;
+  if ($_[3]) { bless \@proxy, ref $_[2] }
+  return \@proxy;
 }
 
-sub TIEARRAY
-{
-        my ($class, $self, $postsubs, $original) = @_;
-        bless   { 'orig' => $original,
-                  'post' => $postsubs,
-                }, $class;
+sub TIEARRAY {
+  my ($class, $self, $postsubs, $original) = @_;
+  return bless { 'orig' => $original,
+		 'post' => $postsubs,
+	       }, $class;
 }
 
-sub FETCH       { $_[0]->{orig}->[$_[1]] }
-sub FETCHSIZE   { scalar @{$_[0]->{orig}}; }
-sub STORE       { $_[0]->{orig}->[$_[1]] = $_[2] }
-sub STORESIZE   { $#{$_[0]->{orig}} = $_[1]-1 }
-sub EXTEND      { $#{$_[0]->{orig}} = $_[1]-1 }
-sub CLEAR       { @{$_[0]->{orig}} = () }
-sub PUSH        { push @{$_[0]->{orig}}, @_[1..$#_] }
-sub POP         { pop @{$_[0]->{orig}} }
-sub UNSHIFT     { unshift @{$_[0]->{orig}}, @_[1..$#_] }
-sub SHIFT       { shift @{$_[0]->{orig}} }
+sub FETCH       { $_[0]->{'orig'}->[$_[1]] }
+sub FETCHSIZE   { scalar @{$_[0]->{'orig'}} }
+sub STORE       { $_[0]->{'orig'}->[$_[1]] = $_[2] }
+sub STORESIZE   { $#{$_[0]->{'orig'}} = $_[1]-1 }
+sub EXTEND      { $#{$_[0]->{'orig'}} = $_[1]-1 }
+sub CLEAR       { @{$_[0]->{'orig'}} = () }
+sub PUSH        { push @{$_[0]->{'orig'}}, @_[1..$#_] }
+sub POP         { pop @{$_[0]->{'orig'}} }
+sub UNSHIFT     { unshift @{$_[0]->{'orig'}}, @_[1..$#_] }
+sub SHIFT       { shift @{$_[0]->{'orig'}} }
 
-sub DESTROY
-{
-        my ($self) = @_;
-        for my $postspec ( @{$self->{'post'}} )
-        {
-            next if $postspec->{opt}
-                 && no_opt $postspec->{owner};
-            unless ($postspec->{code}->(@_))
-                { printf STDERR Carp::shortmess
-                        sprintf "$postspec->{msg}", $postspec->{loc};
-                  Class::Contract::_free_value;
-                  exit }
-        }
-        Class::Contract::_free_value;
+sub DESTROY {
+  Class::Contract::generic_check('post', 'attr', @{self()}{qw(orig spec)}, @_);
+  Class::Contract::_free_value();
 }
 
 
 package Class::Contract::PostHASH;
 
-sub new
-{
-        my %proxy;
-        tie %proxy, 'Class::Contract::PostHASH', @_;
-        if ($_[3]) { bless \%proxy, ref $_[2] }
-        return \%proxy;
+sub new {
+  my %proxy;
+  tie %proxy, 'Class::Contract::PostHASH', @_;
+  if ($_[3]) { bless \%proxy, ref $_[2] }
+  return \%proxy;
 }
 
-sub TIEHASH
-{
-        my ($class, $self, $postsubs, $original) = @_;
-        bless   { 'orig' => $original,
-                  'post' => $postsubs,
-                }, $class;
+sub TIEHASH {
+  my ($class, $self, $postsubs, $original) = @_;
+  return bless { 'orig' => $original,
+		 'post' => $postsubs,
+	       }, $class;
 }
 
-sub FETCH       { $_[0]->{orig}->{$_[1]} }
-sub STORE       { $_[0]->{orig}->{$_[1]} = $_[2] }
-sub EXISTS      { exists $_[0]->{orig}->{$_[1]} }
-sub DELETE      { delete $_[0]->{orig}->{$_[1]} }
-sub CLEAR       { %{$_[0]->{orig}} = () }
-sub FIRSTKEY    { keys %{$_[0]->{orig}}; each %{$_[0]->{orig}} }
-sub NEXTKEY     { each %{$_[0]->{orig}} }
+sub FETCH       { $_[0]->{'orig'}->{$_[1]} }
+sub STORE       { $_[0]->{'orig'}->{$_[1]} = $_[2] }
+sub EXISTS      { exists $_[0]->{'orig'}->{$_[1]} }
+sub DELETE      { delete $_[0]->{'orig'}->{$_[1]} }
+sub CLEAR       { %{$_[0]->{'orig'}} = () }
+sub FIRSTKEY    { keys %{$_[0]->{'orig'}}; each %{$_[0]->{'orig'}} }
+sub NEXTKEY     { each %{$_[0]->{'orig'}} }
 
-sub DESTROY
-{
-        my ($self) = @_;
-        for my $postspec ( @{$self->{'post'}} )
-        {
-            next if $postspec->{opt}
-                 && no_opt $postspec->{owner};
-            unless ($postspec->{code}->(@_))
-                { printf STDERR Carp::shortmess
-                        sprintf "$postspec->{msg}", $postspec->{loc};
-                  Class::Contract::_free_value;
-                  exit }
-        }
-        Class::Contract::_free_value;
+sub DESTROY {
+  Class::Contract::generic_check('post', 'attr', @{self()}{qw(orig spec)}, @_);
+  Class::Contract::_free_value();
 }
 # ...NOT IN PRODUCTION
 
@@ -909,16 +899,16 @@ Class::Contract - Design-by-Contract OO in Perl.
 
 =head1 VERSION
 
-This document describes version 1.00 of Class::Contract,
-released August  6, 2000.
+This document describes version 1.10 of Class::Contract,
+released February  9, 2001.
 
 =head1 SYNOPSIS
 
-        package ClassName
-        use Class::Contract;
+    package ClassName
+    use Class::Contract;
 
-        contract {
-            inherits 'BaseClass';
+    contract {
+      inherits 'BaseClass';
 
 	    invar { ... };
 
@@ -927,25 +917,25 @@ released August  6, 2000.
 
 	    class attr 'shared' => SCALAR;
 
-            ctor 'new';
+      ctor 'new';
 
-            method 'methodname';
-                pre  { ... };
-                    failmsg 'Error message';
+      method 'methodname';
+        pre  { ... };
+          failmsg 'Error message';
 
-                post  { ... };
-                    failmsg 'Error message';
+        post  { ... };
+          failmsg 'Error message';
 
-                impl { ... };
+        impl { ... };
 
-            method 'nextmethod';
-                impl { ... };
+      method 'nextmethod';
+        impl { ... };
 
 	    class method 'sharedmeth';
-			impl { ... };
+			  impl { ... };
 
 	    # etc.
-        };
+    };
 
 
 =head1 DESCRIPTION
@@ -1010,7 +1000,7 @@ class in the current package:
 
         package Queue;
         contract {
-                # specification of class Queue attributes and methods here
+          # specification of class Queue attributes and methods here
         };
 
 =head2 Defining attributes
@@ -1033,7 +1023,7 @@ accessors might look like this:
 
         ${$obj->last}++;
         push @{$obj->list}, $newitem;
-        print $obj->lost->{marbles};
+        print $obj->lost->{'marbles'};
         $obj->lust->after('technology stocks');
 
 Attributes are normally object-specific, but it is also possible to define
@@ -1055,7 +1045,7 @@ or as a class method:
 
         print ${Queue->obj_count};
 
-In order to ensure that the clauses of a class's contract (see below)
+In order to ensure that the clauses of a class' contract (see below)
 are honoured, both class and object attributes are only accessible via
 their accessors, and those accessors may only be called within methods
 belonging to the same class hierarchy. Objects are implemented as
@@ -1081,9 +1071,9 @@ subroutine is used to provide an implementation for it:
 C<impl> takes a block (or a reference to a subroutine), which is used as
 the implementation of the method named by the preceding C<method> call.
 Within that block, the subroutine C<self> may be used to return a
-reference to the object on which the method was called. However, as in
-regular OO Perl, that object reference is also passed as the method's
-first argument.
+reference to the object on which the method was called. Unlike, regular
+OO Perl, the object reference is not passed as the method's first argument.
+(Note: this change occurred in version 1.10)
 
 Like attributes, methods normally belong to -- and are accessed via -- a
 specific object. To define methods that belong to the entire class, the
@@ -1107,7 +1097,7 @@ the C<ctor> subroutine:
 
         contract {
                 ctor 'new';
-                    impl { @{self->list} = ( $_[1] ) }
+                    impl { @{self->list} = ( $_[0] ) }
         };
 
 Note that the implementation section of a constructor I<doesn't> specify
@@ -1136,7 +1126,7 @@ to initialize class attributes:
                 class attr 'obj_count';
 
                 class ctor;
-                        impl { ${self->obj_count}=0 };
+                        impl { ${self->obj_count} = 0 };
         };
 
 The class constructor is invoked at the very end of the call to
@@ -1151,7 +1141,7 @@ class method) later in the program:
                 class attr 'obj_count';
 
                 class ctor 'reset';
-                        impl { ${self->obj_count}=0 };
+                        impl { ${self->obj_count} = 0 };
         };
 
         # and later...
@@ -1286,8 +1276,8 @@ change in size of an object:
 
         contract {
             method 'append';
-                post { @{self->queue} == @{old->queue} + @_ - 1 }
-                impl { push @{self->queue}, @_[1..$#_] };
+                post { @{self->queue} == @{old->queue} + @_ }
+                impl { push @{self->queue}, @_ };
         };
 
 Note that the implementation's return value is also available in the
@@ -1298,8 +1288,8 @@ post-condition could also be written:
 
         contract {
             method 'append';
-                post { ${&value} == @{old->queue} + @_ - 1 }
-                impl { push @{self->queue}, @_[1..$#_] };
+                post { ${&value} == @{old->queue} + @_ }
+                impl { push @{self->queue}, @_ };
         };
 
 Note that C<value> will return a reference to a scalar or to
@@ -1415,6 +1405,15 @@ derived class is to be usable. To ensure this, any constructor built by
 Class::Contract will refuse to create objects belonging to classes with
 abstract methods.
 
+Methods in a base class can also be declared as being I<private>:
+
+        contract {
+            private method 'remove';
+                impl { pop @{self->queue} };
+        };
+
+Private methods may only be invoked by the class or one of its 
+descendants. 
 
 =head2 Inheritance and condition checking
 
@@ -1460,45 +1459,44 @@ inherited methods from the derived-class methods that redefine them.
 
             method 'push';
                 # Check that data to be added is okay...
-                pre  { defined $_[1] };
+                pre  { defined $_[0] };
                     failmsg 'Cannot push an undefined value';
-                pre  { $_[2] > 0 };
+                pre  { $_[1] > 0 };
                     failmsg 'Priority must be greater than zero';
 
                 # Check that push increases stack depth appropriately...
                 post { self->count == old->count+1 };
 
                 # Check that the right thing was left on top...
-                post { old->top->{priority} <= self->top->{priority} };
+                post { old->top->{'priority'} <= self->top->{'priority'} };
 
                 # Implementation reuses inherited methods: pop any higher
                 # priority entries, push the new entry, then re-bury it...
                 impl {
-                    my ($newval, $priority) = @_[1,2];
+                    my ($newval, $priority) = @_[0,1];
                     my @betters;
                     unshift @betters, self->Stack::pop 
                         while self->count
-                           && self->Stack::top->{priority} > $priority;
-                    self->Stack::push( {val=>$newval, priority=>$priority} );
-                    self->Stack::push( $_ ) foreach @betters;
+                           && self->Stack::top->{'priority'} > $priority;
+                    self->Stack::push( {'val'=>$newval, priority=>$priority} );
+                    self->Stack::push( $_ )  foreach @betters;
                 };
 
             method 'pop';
-
                 # Check that pop decreases stack depth appropriately...
                 post { self->count == old->count-1 };
 
                 # Reuse inherited method...
                 impl {
-                    return unless self->count;
-                    return self->Stack::pop->{val};
+                    return  unless self->count;
+                    return self->Stack::pop->{'val'};
                 };
 
             method 'top';
                 post { old->count == self->count }
                 impl {
-                    return unless self->count;
-                    return self->Stack::top->{val};
+                    return  unless self->count;
+                    return self->Stack::top->{'val'};
                 };
         };
 
@@ -1580,6 +1578,10 @@ itself) to be user-defined.
 
 Damian Conway (damian@conway.org)
 
+=head1 MAINTAINER
+
+C. Garrett Goebel (ggoebel@cpan.org)
+
 =head1 BUGS
 
 There are undoubtedly serious bugs lurking somewhere in code this funky :-)
@@ -1588,6 +1590,11 @@ Bug reports and other feedback are most welcome.
 =head1 COPYRIGHT
 
 Copyright (c) 1997-2000, Damian Conway. All Rights Reserved.
+This module is free software. It may be used, redistributed
+and/or modified under the terms of the Perl Artistic License
+  (see http://www.perl.com/perl/misc/Artistic.html)
+
+Copyright (c) 2000-2001, C. Garrett Goebel. All Rights Reserved.
 This module is free software. It may be used, redistributed
 and/or modified under the terms of the Perl Artistic License
   (see http://www.perl.com/perl/misc/Artistic.html)

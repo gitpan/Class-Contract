@@ -1,545 +1,574 @@
 package Class::Contract::Production;
 use strict;
-use vars qw( @ISA @EXPORT $VERSION);
+use vars qw( $VERSION @ISA @EXPORT @EXPORT_OK %EXPORT_TAGS);
 require Exporter;
 use Carp;
 
-$VERSION = 1.00;
+$VERSION = '1.10';
 
-@ISA = qw( Exporter );
-@EXPORT = qw ( contract abstract class attr method ctor dtor optional pre post impl invar inherits check self callstate failmsg value );
+@ISA = qw(Exporter);
+@EXPORT = qw(contract ctor dtor attr method pre impl post invar inherits
+             self value old class abstract private optional check callstate
+             failmsg dclone);
+@EXPORT_OK = qw(scalar_attrs array_attrs hash_attrs methods);
+%EXPORT_TAGS = (DEFAULT  => \@EXPORT,
+                EXTENDED => \@EXPORT_OK,
+                ALL      => [@EXPORT, @EXPORT_OK]);
 
 my %contract;
-my %data;
+my %data;  
 my %class_attr;
 my $current;
 my $msg_target;
-my %no_opt;		# NOT IN PRODUCTION
 
 my @class_dtors;
+END { $_->()  foreach (@class_dtors) }
 
-END { for (@class_dtors) { $_->() } }
-
-sub contract(&)
-{
-	my ($spec) = @_;
-	$spec->();
-	_build_class(caller);
+sub contract(&) {
+  my ($spec) = @_;
+  $spec->();
+  return _build_class(caller);
 }
 
-sub check(\%;$)
-{
+sub check(\%;$) {
 }
 
 
-sub _location
-{
-	return join ' line ', (caller(2))[1..2];
+sub _location { # scalar context returns file and line of external code
+                # array context returns package aka 'owner', file and line
+  my ($i, @c, $owner);
+  while (@c = (caller($i++))[0..2]) {
+    if ($c[0] !~ /^Class::Contract::Production$/) {
+      $owner = $c[0]  if !$owner;
+      if ($c[1] !~ /^\(eval \d+\)$/) {
+			  return (wantarray ? $owner : (), join ' line ', @c[1,2]);
+			}
+    }
+  }
 }
 
-my %def_type =
-(
-	'attr'		=> 'SCALAR',
-	'method'	=> '',
-	'ctor'		=> '',
-	'dtor'		=> '',
+my %def_type = (
+  'attr'   => 'SCALAR',
+  'method' => '',
+  'ctor'   => '',
+  'dtor'   => ''
 );
 
-sub _member
-{
-	my ($kind, $name, $type) = @_;
-	my ($owner) = caller(3);
-	my $location = _location;
-	$name = "" unless $name;
+sub _member {
+  my ($kind, $name, $type) = @_;
+  my ($owner, $location) = _location;
+  $name = ''  unless $name;
 
-	if (defined $contract{$owner}{$kind}{$name})
-	{
-		croak "\u$kind ${owner}::$name redefined" if $name;
-		croak "Unnamed $kind redefined";
-	}
+  if (defined $contract{$owner}{$kind}{$name}) {
+    croak "\u$kind ${owner}::$name redefined"  if $name;
+    croak "Unnamed $kind redefined";
+  }
 	
-	$contract{$owner}{$kind}{$name} = $current =
-		bless { name	=> $name,
-			type	=> $type||$def_type{$kind},
-			gentype	=> $type||$def_type{$kind},	# NOT IN PRODUCTION
-			loc	=> $location,
-			shared  => 0,
-			abstract=> 0,
-			'pre'     => [],
-			'post'    => [],
-		      }, "Class::Contract::Production::$kind";
+  $contract{$owner}{$kind}{$name} = $current =
+    bless {'name'     => $name,
+	   'type'     => $type || $def_type{$kind},
+	   'loc'      => $location,
+	   'shared'   => 0,
+           'private'  => 0,
+	   'abstract' => 0,
+	  }, "Class::Contract::Production::$kind";
 
-	return $current;
+  return $current;
 }
 
-sub attr($;$)		{ _member('attr'   => @_) }
-sub method($)		{ _member('method' => @_) }
-sub ctor(;$)		{ _member('ctor'   => @_) }
-sub dtor(;$)		{ _member('dtor'   => @_) }
+sub attr($;$) { _member('attr'   => @_) }
+sub method($) { _member('method' => @_) }
+sub ctor(;$)  { _member('ctor'   => @_) }
+sub dtor()    { _member('dtor') }
 
-sub class
-{
-	my ($member) = @_;
-	$member->{shared} = 1;
-	return $member;
-}
+sub scalar_attrs(@) { map _member('attr', $_, 'SCALAR'), @_ }
+sub array_attrs(@)  { map _member('attr', $_, 'ARRAY'),  @_ }
+sub hash_attrs(@)   { map _member('attr', $_, 'HASH'),   @_ }
+sub methods(@)      { map _member('attr', $_),           @_ }
 
-sub abstract
-{
-	my ($member) = @_;
-	$member->{'abstract'} = 1;
-	return $member;
-}
+sub class(@)    { $_->{'shared'}   = 1  foreach(@_); @_ }
+sub abstract(@) { $_->{'abstract'} = 1  foreach(@_); @_ }
+sub private(@)  { $_->{'private'}  = 1  foreach(@_); @_ }
 
-my %def_msg =
-(
-	'pre'	=> "Pre-condition at %s failed",
-	'post'	=> "Post-condition at %s failed",
-	'invar'	=> "Class invariant at %s failed",
-	'impl'	=> undef,
+my %def_msg = (
+  'pre'	  => 'Pre-condition at %s failed',
+  'post'  => 'Post-condition at %s failed',
+  'invar' => 'Class invariant at %s failed',
+  'impl'  => undef
 );
 
-sub _current
-{
-	my ($field, $code) = @_;
-	croak "Unattached $field" unless defined $current;
-	croak "Attribute cannot have implementation"
-		if $current->isa('Class::Contract::Production::attr')
-		&& $field eq 'impl';
+sub _current {
+  my ($field, $code) = @_;
+  croak "Unattached $field"  unless defined $current;
+  croak "Attribute cannot have implementation"
+    if $current->isa('Class::Contract::Production::attr') && $field eq 'impl';
 
-	my $descriptor = bless {
-				code => $code,
-				opt  => 0,		# NOT IN PRODUCTION
-				msg  => $def_msg{$field},
-				owner=> scalar caller(1),
-				loc  => _location,
-			       }, 'Class::Contract::Production::current';
-	if ($field eq 'impl' &&
-		!( $current->isa('Class::Contract::Production::ctor') 
-		|| $current->isa('Class::Contract::Production::dtor'))) 
-		{ $current->{$field} = $descriptor }
-	else
-		{ push @{$current->{$field}}, $descriptor }
+  my $descriptor = bless {
+    'code'  => $code,
+    'msg'   => $def_msg{$field},
+  }, 'Class::Contract::Production::current';
+  @{$descriptor}{qw(owner loc)} = _location;
 
-	$msg_target = $descriptor;
+  if ($field eq 'impl' && !( $current->isa('Class::Contract::Production::ctor') 
+      || $current->isa('Class::Contract::Production::dtor'))) { 
+    $current->{$field} = $descriptor
+  } else {
+    push @{$current->{$field}}, $descriptor
+  }
+  
+  $msg_target = $descriptor;
 }
 
-sub failmsg		{ croak "Unattached failmsg" unless $msg_target;
-			  $msg_target->{msg} = shift; }
-
-sub pre(&)		{ return _current('pre'	=> @_) }
-sub post(&)		{ return _current('post'	=> @_) }
-sub impl(&)		{ return _current('impl' => @_) }
-
-sub optional
-{
+sub failmsg {
+  croak "Unattached failmsg"  unless $msg_target;
+  $msg_target->{'msg'} = shift;
 }
 
+sub pre(&)  { _current('pre'  => @_) }
+sub post(&) { _current('post' => @_) }
+sub impl(&) { _current('impl' => @_) }
 
-sub invar(&) { &_invar }	# TO MAKE _location WORK CORRECTLY
+sub optional { # my (@descriptors) = @_;
+}
 
-sub _invar
-{
-	my ($code) = @_;
-	my ($owner) = caller(3);
+sub invar(&) {
+  my ($code) = @_;
 
-	my $descriptor = {
-				code => $code,
-				opt  => 0,		# NOT IN PRODUCTION
-				msg  => $def_msg{'invar'},
-				owner=> $owner,
-				loc  => _location,
-			 };
+  my $descriptor = {
+    'code'  => $code,
+    'msg'   => $def_msg{'invar'},
+  };
+  @{$descriptor}{qw(owner loc)} = _location;
 
-	push @{$contract{$owner}{'invar'}}, $descriptor;
-	$msg_target = $descriptor;
+  push @{$contract{$descriptor->{'owner'}}{'invar'}}, $descriptor;
+  $msg_target = $descriptor;
 }
 
 
-sub inherits(@)		
-{
-	my ($owner) = caller(2);
-
-	push @{$contract{$owner}{parents}}, @_;
+sub inherits(@)	{
+  my ($owner) = _location;
+  foreach (@_) {
+    croak "Can't create circular reference in inheritence\n$_ is a(n) $owner" 
+      if $_->isa($owner)
+  }
+  push @{$contract{$owner}{'parents'}}, @_;
 }
 
+sub _build_class($) {
+  my ($class) = @_;
+  my $spec = $contract{$class};
+  _inheritance($class, $spec);
+  _attributes($class, $spec);
+  _methods($class, $spec);
+  _constructors($class, $spec);
+  _destructors($class, $spec);
 
-sub _build_class($)
-{
-	my ($classname) = @_;
-	
-	my $spec = $contract{$classname};
-
-	_inheritance($classname, $spec);
-	_attributes($classname, $spec);
-	_methods($classname, $spec);
-	_constructors($classname, $spec);
-	_destructors($classname, $spec);
-
-	1;
+  1;
 }
 
-localscope:{
+localscope: {
   my @context;
-  sub _set_context  { push @context, {__SELF__ => shift } }
-  sub _free_context { pop(@context) }
+  sub _set_context  {
+    push @context, {'__SELF__' => shift };
+
+  }
+  sub _free_context {
+    return pop @context
+  }
+  sub old() {
+    croak "No context. Can't call &old"  unless @context;
+  }
 
   my @value;
   sub _set_value  { push @value, shift }
-  sub _free_value { my $res = pop @value;
-		    return unless defined $res;
-		    my $resref = ref $res;
-		    return $resref eq 'ARRAY'	? @$res
-			 : $resref eq 'HASH'	? %$res
-			 :                        $$res;
-		  }
-  sub value      { croak "Can't call &value " unless @value;
-		   return $value[-1] }
+  sub _free_value {
+    my $res = pop @value;
+    return  unless defined $res;
+    my $resref = ref $res;
+    return $resref eq 'ARRAY'  ? @$res
+         : $resref eq 'HASH'   ? %$res
+         :                       $$res;
+  }
+  sub value { 
+    croak "Can't call &value "  unless @value;
+    return $value[-1];
+#    return 
+#      ref($value[-1]) =~ /^(SCALAR|ARRAY|HASH|GLOB|FORMAT|CODE|Regexp|REF)$/
+#                       ?  $value[-1]
+#                       :  ${$value[-1]};
+  }
 
-  sub self()       { $context[-1]{__SELF__} }
+  sub self() {
+    if (@_) {
+      $context[-1]{__SELF__} = shift;
+    }
+    croak "No context. Can't call &self"  unless @context;
+    $context[-1]{__SELF__}
+  }
 
-  sub callstate()  { $context[-1]  }
-}
-		
-sub _inheritance
-{
-	my ($classname, $spec) = @_;
-
-	for my $ancestor ( @{$spec->{parents}||[]} )
-	{
-		my $parent = $contract{$ancestor} || next;
-
-		unshift @{$spec->{'invar'}},  @{$parent->{'invar'}||[]};
-
-		for my $attrname ( keys %{$parent->{'attr'}||{}} )
-		{
-			if (! defined $spec->{'attr'}{$attrname})
-			{
-				%{$spec->{'attr'}{$attrname}} =
-					%{$parent->{'attr'}{$attrname}||{}};
-				
-				next;
-			}
-			
-		}
-
-		for my $methodname ( keys %{$parent->{'method'}||{}} )
-		{
-			if (! defined $spec->{'method'}{$methodname})
-			{
-				%{$spec->{'method'}{$methodname}} =
-					%{$parent->{'method'}{$methodname}||{}};
-				next;
-			}
-
-		
-
-			$spec->{'method'}{$methodname}{'impl'} =
-			$parent->{'method'}{$methodname}{'impl'}
-				unless defined
-				$spec->{'method'}{$methodname}{'impl'};
-
-		}
-		for my $ctorname ( keys %{$parent->{'ctor'}||{}} )
-		{
-			if (! defined $spec->{'ctor'}{$ctorname})
-			{
-				%{$spec->{'ctor'}{$ctorname}} =
-					%{$parent->{'ctor'}{$ctorname}||{}};
-				next;
-			}
-
-
-                        unshift @{$spec->{'ctor'}{$ctorname}{'impl'}},
-                                @{$parent->{'ctor'}{$ctorname}{'impl'}};
-                }
-
-                for my $dtorname ( keys %{$parent->{'dtor'}||{}} )
-                {
-
-                        if (! defined $spec->{'dtor'}{$dtorname})
-                        {
-                                %{$spec->{'dtor'}{$dtorname}} =
-                                        %{$parent->{'dtor'}{$dtorname}||{}};
-                                next;
-                        }
-
-
-                        push @{$spec->{'dtor'}{$dtorname}{'impl'}},
-                             @{$parent->{'dtor'}{$dtorname}{'impl'}};
-                }
-
-        }
-
-        no strict 'refs';
-        unshift @{"${classname}::ISA"}, @{$spec->{parents}||[]};
+  sub callstate() {
+    croak "No context. Can't call &callstate"  unless @context;
+    return $context[-1];
+  }
 }
 
-sub _attributes
-{
-        my ($classname, $spec) = @_;
+sub _inheritance {                                  #  A  D  Invokation order
+# Inheritence is left-most depth-first. Destructors #  /\ |   
+# are called in reversed order as the constructors  # B C E    ctor: ABCDEF
+# Diamond patterns in inheritence are 'handled' by  #  \//     dtor: FEDCBA
+# looking for and skipping duplicate anonymous refs #   F
 
-        while ( my ($name, $attr) = each %{$spec->{'attr'}} )
-        {
-                if ($attr->{shared})
-                {
-                        my $ref = $class_attr{$classname}{$name} = 
-                                $attr->{type} eq 'ARRAY'  ? []
-                              : $attr->{type} eq 'HASH'   ? {}
-                              : $attr->{type} eq 'SCALAR' ? do { \ my $scalar }
-                              : eval { $attr->{type}->new }
-                                || croak "Unable to create $attr->{type} object for class attribute $name";
-                }
-                localscope:{
-                        no strict 'refs';
-                        local $^W;
-                        *{"${classname}::$name"} = sub
-                        {
-                                _set_context @_;
-                                my $attr_ref = ($attr->{shared})
-                                                ? $class_attr{$classname}{$name}
-                                                : $data{$_[0]}{$name};
-                                _set_value $attr_ref;	
-                                my $caller = caller;
-                                croak "attribute ${classname}::$name inaccessible from package $caller"
-                                        unless $classname->isa($caller);
+  my ($classname, $spec) = @_;
+  my (%inherited_clause, %inherited_impl);
+  foreach my $ancestor ( reverse @{$spec->{'parents'} || [] } ) {
+    my $parent = $contract{$ancestor} || next;
+    foreach my $clause ( qw( attr method ctor dtor ) ) {
+      foreach my $name ( keys %{ $parent->{$clause} || {} } ) {
 
+				# Inherit each clause from ancestor unless defined
+				if (! defined $spec->{$clause}{$name} or $inherited_clause{$name}) {
+          $inherited_clause{$name}++;
+					%{$spec->{$clause}{$name}} = (%{$parent->{$clause}{$name}});
+					next;
+				}
 
-                                _free_context;
+				# Inherit ctor/dtor invokation from ancestors
+				if ($clause =~ /^(ctor|dtor)$/) {
+					if (defined $parent->{$clause}{$name}{'impl'}
+							and @{$parent->{$clause}{$name}{'impl'}}) {
+						my (@impl, %seen) = (@{$spec->{$clause}{$name}{'impl'}});
+						if (@impl) {
+							$seen{$impl[$_]} = $_  foreach (0..$#impl);
+							foreach my $item ( @{$parent->{$clause}{$name}{'impl'}} ) {
+								splice(@{$spec->{$clause}{$name}{'impl'}}, $seen{$item}, 1)
+			 					  if exists $seen{$item};
+							}
+						}
+						$clause eq 'ctor'
+						? unshift(@{$spec->{$clause}{$name}{'impl'}},
+											@{$parent->{$clause}{$name}{'impl'}})
+						: push(@{$spec->{$clause}{$name}{'impl'}},
+									 @{$parent->{$clause}{$name}{'impl'}});
+					}
+				}
 
-                                _free_value;
-                                return $attr_ref;
-                        }
-                }
-        }
+				# Get implementation from ancestor if derived but not redefined
+				if ($clause eq 'method') {
+					if (! defined $spec->{$clause}{$name}{'impl'}
+							or $inherited_impl{$name}) {
+						$inherited_impl{$name}++;
+						$spec->{$clause}{$name}{'impl'}=$parent->{$clause}{$name}{'impl'};
+					}
+				}
+      }
+    }
+  }
+
+  no strict 'refs';
+  unshift @{"${classname}::ISA"}, @{ $spec->{'parents'} || [] };
 }
 
-sub _methods
-{
-        my ($classname, $spec) = @_;
+sub _attributes {
+  my ($classname, $spec) = @_;
 
-        while ( my ($name, $method) = each %{$spec->{'method'}} )
-        {
-                $spec->{'abstract'} ||= $method->{'abstract'};
-                unless ($method->{'impl'})
-                {
-                        if ($method->{'abstract'})
-                        {
-                                $method->{'impl'} = 
-                                { code => sub
-                                    {
-                                        croak "Can't call abstract method ${classname}::$name"
-                                    }
-                                }
-                        }
-                        else
-                        {
-                                croak qq{No implementation for method $name at $method->{loc}.\n(Did you forget to declare it 'abstract'?)\n}
-                        }
-                }
+  while ( my ($name, $attr) = each %{$spec->{'attr'}} ) {
+    if ($attr->{'shared'}) {
+      my $ref = $class_attr{$classname}{$name} = 
+	      $attr->{'type'} eq 'ARRAY'  ? []
+      : $attr->{'type'} eq 'HASH'   ? {}
+      : $attr->{'type'} eq 'SCALAR' ? do { \ my $scalar }
+      : eval { $attr->{'type'}->new }
+        || croak "Unable to create $attr->{'type'} object ",
+                 "for class attribute $name";
+    }
 
-                local_scope:{
-                        local $^W;
-                        no strict 'refs';
-                        *{"${classname}::$name"} = sub
-                        {
+    localscope: {
+      no strict 'refs';
+      local $^W;
+      *{"${classname}::$name"} = sub {
+        croak(qq|Can\'t access object attr w/ class reference |,$attr->{'loc'})
+				unless ($attr->{'shared'} or ref($_[0]));
 
-                                _set_context @_;
-
-
-                                if (wantarray)  { _set_value
-				[$method->{'impl'}{code}->(@_)] }
-                                else            { my $res = $method->{'impl'}{code}->(@_); _set_value \$res }
+				my $self = shift;
+				_set_context $attr->{'shared'} ? ref($self)||$self : $self; 
+				my $attr_ref = ($attr->{'shared'})
+				? $class_attr{$classname}{$name}
+				: $data{$$self}{$name};
+				_set_value $attr_ref;	
+				my $caller = caller;
+				croak "attribute ${classname}::$name inaccessible from package $caller"
+				unless $classname->isa($caller);
 
 				
+				_free_context;
+				
 
-                                _free_context;
-                                return _free_value;
-                        }
-                }
-        }
+				_free_value;
+				return $attr_ref;
+      }
+    }
+  }
+}
+
+sub _methods {
+  my ($classname, $spec) = @_;
+
+  while ( my ($name, $method) = each %{$spec->{'method'}} ) {
+    $spec->{'abstract'} ||= $method->{'abstract'};
+    unless ($method->{'impl'}) {
+      if ($method->{'abstract'}) {
+				$method->{'impl'} = {'code' => sub {
+					croak "Can't call abstract method ${classname}::$name"
+				} }
+      } else {
+				croak qq{No implementation for method $name at $method->{'loc'}.\n},
+	      qq{(Did you forget to declare it 'abstract'?)\n}
+      }
+    }
+
+    local_scope: {
+      local $^W;
+      no strict 'refs';
+      *{"${classname}::$name"} = sub {
+				my $caller = caller;
+				croak "private method ${classname}::$name inaccessible from $caller"
+				  if $method->{'private'} and not $caller->isa($classname);
+
+				my $self = shift;
+				_set_context $method->{'shared'} ? ref($self)||$self : $self; 
+	
+
+				if (wantarray) {
+					_set_value [$method->{'impl'}{'code'}->(@_)] 
+				} else { 
+					my $res = $method->{'impl'}{'code'}->(@_);
+					_set_value \$res 
+				}
+				
+
+				_free_context;
+				return _free_value;
+      }
+    }
+  }
 }
 
 
-sub generic_ctor
-{
-        my ($class) = @_;
+sub generic_ctor {
+  my ($class) = @_;
 
-        croak "Class $class has abstract methods. Can't create $class object"
-                if $contract{$class}{'abstract'};
+  croak "Class $class has abstract methods. Can't create $class object"
+    if $contract{$class}{'abstract'};
 
-        my $key;
-        bless \$key, $class;
+  my $key = \ my $undef;
+  my $obj = \ $key;
+  bless $obj, $class;
 
-        my $attr = $contract{$class}{'attr'};
+  my $attr = $contract{$class}{'attr'};
         
-        for my $attrname ( keys %$attr )
-        {
-            unless ($attr->{$attrname} && $attr->{$attrname}{shared})
-            {
-                my $ref = $data{\$key}{$attrname} = 
-                        $attr->{$attrname}{type} eq 'ARRAY'  ? []
-                      : $attr->{$attrname}{type} eq 'HASH'   ? {}
-                      : $attr->{$attrname}{type} eq 'SCALAR' ? do { \my $scalar }
-                      : eval { $attr->{$attrname}{type}->new }
-                        || croak "Unable to create $attr->{$attrname}{type} object for attribute $attrname";
-            }
-                                
-        }
+  foreach my $attrname ( keys %$attr ) {
+    unless ($attr->{$attrname} && $attr->{$attrname}{'shared'}) {
+      my $ref = $data{$key}{$attrname}
+			= $attr->{$attrname}{'type'} eq 'ARRAY'  ? []
+			: $attr->{$attrname}{'type'} eq 'HASH'   ? {}
+      : $attr->{$attrname}{'type'} eq 'SCALAR' ? do { \my $scalar }
+      : eval { $attr->{$attrname}{type}->new }
+      || croak "Unable to create $attr->{$attrname}{'type'} ",
+			         "object for attribute $attrname";
+    }
+  }
 
-        return \$key;
+  return $obj;
 }
 
-sub _constructors
-{
-        my ($classname, $spec) = @_;
-        my $noctor = 1;
+sub _constructors {
+  my ($classname, $spec) = @_;
+  my $noctor = 1;
 
-        while ( my ($name, $ctor) = each %{$spec->{'ctor'}} )
-        {
-                $noctor &&= $ctor->{shared}
-        }
+  while ( my ($name, $ctor) = each %{$spec->{'ctor'}} ) {
+    $noctor &&= $ctor->{'shared'}
+  }
 
-        $spec->{'ctor'}{new} = 
-                 bless { name     => 'new',
-                         shared   => 0,
-                         'abstract' => 0,
-                         loc      => '<implicit>'
-                       }, 'Class::Contract::Production::ctor'
-                                if $noctor;
+  $spec->{'ctor'}{'new'} = bless {
+    'name'     => 'new',
+    'shared'   => 0,
+    'abstract' => 0,
+    'loc'      => '<implicit>'
+  }, 'Class::Contract::Production::ctor'
+    if $noctor;
 
-        while ( my ($name, $ctor) = each %{$spec->{'ctor'}} )
-        {
-                $spec->{'abstract'} ||= $ctor->{'abstract'};
+  while ( my ($name, $ctor) = each %{$spec->{'ctor'}} ) {
+    $spec->{'abstract'} ||= $ctor->{'abstract'};
 
-                if ($ctor->{shared})
-                {
-                    localscope:{
-                        local $^W;
-                        no strict 'refs';
-                        my $classctor = sub
-                        {
-                                my ($self) = @_;
-                                $self = ref $self if ref $self;
-
-                                _set_context $self;
+    if ($ctor->{'shared'}) {
+      localscope: {
+				local $^W;
+				no strict 'refs';
+				my $classctor = sub {
+					my $self = shift;
+					_set_context ref($self)||$self; 
                                 
 
-                                for my $implspec ( @{$ctor->{'impl'}} )
-                                {
-                                        my $res = $implspec->{code}->(@_);
-                                        _set_value \$res;
-                                }
+					foreach my $implspec ( @{$ctor->{'impl'}} ) {
+						my $res = $implspec->{'code'}->(@_);
+						_set_value \$res;
+					}
 
 
-                                _free_context;
-                                return _free_value;
-                        };
-                        $classname->$classctor();
-                        *{"${classname}::$name"} = $classctor if $name;
-                    }
-                }
-                else
-                {
-                    localscope:{
-                        local $^W;
-                        no strict 'refs';
-                        *{"${classname}::$name"} = sub
-                        {
-                                my ($class) = @_;
-
-                                my $self = 
-                                        Class::Contract::Production::generic_ctor($class);
-                                _set_context $self;
-                                
-
-                                for my $implspec ( @{$ctor->{'impl'}} )
-                                {
-                                        if (wantarray)  { _set_value [$implspec->{code}->(@_)] }
-                                        else            { my $res = $implspec->{code}->(@_); _set_value \$res }
-                                }
-
-
-                                _free_value;
-                                _free_context;
-                                return $self;
-                        }
-                    }
-                }
-        }
+					_free_context;
+					return _free_value;
+				};
+				$classname->$classctor();
+				*{"${classname}::$name"} = $classctor  if $name;
+      }
+    } else {
+      localscope:{
+				local $^W;
+				no strict 'refs';
+				*{"${classname}::$name"} = sub {
+          my $proto = shift;
+					my $class = ref($proto)||$proto;
+					my $self = Class::Contract::Production::generic_ctor($class);
+					_set_context $self;
+	    
+	    
+					foreach my $implspec ( @{$ctor->{'impl'}} ) {
+						if (wantarray) {
+							_set_value [$implspec->{'code'}->(@_)] 
+						} else {
+							my $res = $implspec->{'code'}->(@_);
+							_set_value \$res
+						}
+					}
+	    
+	    
+					_free_value;
+					_free_context;
+					return $self;
+				}
+      }
+    }
+  }
 }
 
-sub _destructors
-{
-        my ($classname, $spec) = @_;
-
-        my $dtorcount = 0;
-
-        while ( my ($name, $dtor) = each %{$spec->{'dtor'}} )
-        {
-                $spec->{'abstract'} ||= $dtor->{'abstract'};
-
-                if ($dtor->{shared})
-                {
-                    localscope:{
-                        local $^W;
-                        no strict 'refs';
-                        my $classdtor = sub
-                        {
-                                my ($self) = @_;
-                                $self = ref $self if ref $self;
-
-                                _set_context $self;
-                                
-
-                                for my $implspec ( @{$dtor->{'impl'}} )
-                                {
-                                        my $res = $implspec->{code}->(@_);
-                                        _set_value \$res;
-                                }
-
-
-                                _free_context;
-                                return _free_value;
-                        };
-                        push @class_dtors, sub { $classname->$classdtor() };
-                        *{"${classname}::$name"} = $classdtor if $name;
-                    }
-                }
-                else
-                {
-                    croak "Class $classname has too many destructors"
-                        if $dtorcount++;
-
-                    localscope:{
-                        local $^W;
-                        no strict 'refs';
-                        my $objdtor = sub
-                        {
-                                my ($self) = @_;
-
-                                _set_context $self;
-                                
-
-                                for my $implspec ( @{$dtor->{'impl'}} )
-                                {
-                                        if (wantarray)  { _set_value [$implspec->{code}->(@_)] }
-                                        else            { my $res = $implspec->{code}->(@_); _set_value \$res }
-                                }
-
-
-                                _free_value;
-                                _free_context;
-                                return;
-                        };
-                        *{"${classname}::$name"} = $objdtor if $name;
-                        *{"${classname}::DESTROY"} = 
-                                sub { $_[0]->$objdtor(); delete $data{$_[0]} };
-                    }
-                }
-        }
+sub _destructors {
+  my ($classname, $spec) = @_;
+  my $dtorcount = 0;
+	
+  while ( my ($name, $dtor) = each %{$spec->{'dtor'}} ) {
+    $spec->{'abstract'} ||= $dtor->{'abstract'};
+		
+    if ($dtor->{'shared'}) {
+      localscope: {
+				local $^W;
+				no strict 'refs';
+				my $classdtor = sub {
+					croak "Illegal explicit invokation of class dtor", $dtor->{'loc'}
+					  if caller() ne 'Class::Contract::Production';
+					my $self = shift;
+					$self = ref $self  if ref $self;
+					
+					_set_context $self;
+					
+					
+					foreach my $implspec ( @{$dtor->{'impl'}} ) {
+						my $res = $implspec->{'code'}->(@_);
+						_set_value \$res;
+					}
+					
+					_free_context;
+					return _free_value;
+				};
+				
+				push @class_dtors, sub { $classname->$classdtor() };
+      }
+    } else {
+      croak "Class $classname has too many destructors"  if $dtorcount++;
+			
+      localscope: {
+				local $^W;
+				no strict 'refs';
+				my $objdtor = sub {
+					croak "Illegal explicit invokation of object dtor", $dtor->{'loc'}
+					  if caller() ne 'Class::Contract::Production';
+					
+					my $self = shift;
+					_set_context $self;
+					
+					
+					foreach my $implspec ( @{$dtor->{'impl'}} ) {
+						if (wantarray) {
+							_set_value [$implspec->{'code'}->(@_)]
+						} else {
+							my $res = $implspec->{'code'}->(@_);
+							_set_value \$res
+						}
+					}
+					
+					
+					_free_value;
+					_free_context;
+					return;
+				};
+				
+				*{"${classname}::DESTROY"} = sub {
+					$_[0]->$objdtor();
+					delete $data{${$_[0]}};
+			  };
+		  }
+	  }
+  }
+  unless (defined &{"${classname}::DESTROY"}) {
+    local $^W;
+    no strict 'refs';
+    *{"${classname}::DESTROY"} = sub { delete $data{${$_[0]}} };
+  }
 }
 
+localscope: {
+  my ($a,$z) = (qr/(^|^.*?=)/, qr/\(.*?\)$/);
+  my %seen = ();
+  my $depth = 0;
+  sub _dcopy { # Dereference and return a deep copy of whatever's passed
+    my $ref = ref($_[0]) or return $_[0];
+    exists $seen{$_[0]} and return $seen{$_[0]};
+    $depth++;
+
+    my $r =
+      ($_[0] =~ /${a}HASH$z/)   ? {map _dcopy($_), (%{$_[0]})}
+    : ($_[0] =~ /${a}ARRAY$z/)  ? [map _dcopy($_), @{$_[0]} ]
+    : ($_[0] =~ /${a}SCALAR$z/) ? \${$_[1]}
+    : ($_[0] =~ /${a}FORMAT$z/) ? $_[0]
+    : ($_[0] =~ /${a}CODE$z/)   ? $_[0]
+    : ($_[0] =~ /${a}Regexp$z/) ? $_[0]
+    : ($_[0] =~ /${a}REF$z/)    ? $_[0]
+    : ($_[0] =~ /${a}GLOB$z/)   ? $_[0]
+    : $_[0]->can('dclone') ? $_[0]->dclone : $_[0];
+
+    my $rval = $ref =~ /^(HASH|ARRAY|SCALAR|GLOB|FORMAT|CODE|Regexp|REF)$/ 
+             ? $r
+             : bless $r, $ref;
+
+    --$depth 
+      and $seen{$_[0]} = $rval
+      or  %seen = (); 
+
+    return $rval;
+  }
+}
+
+sub dclone ($;$) {
+  my ($self, $alt_class) = (@_);
+  my $class = ref($self);
+  croak "usage: \$object->dclone -Invalid arg $self"
+    unless ($class and 
+	    $class !~ /^(HASH|ARRAY|SCALAR|GLOB|FORMAT|CODE|Regexp|REF)$/);
+  my $key  = \ my $undef;
+  my $safe = _dcopy($data{$$self});
+  my $obj  = bless \$key, $alt_class ? $alt_class : $class;
+  $data{$key} = $safe;
+  return $obj;
+}
 
 
 1;
@@ -552,16 +581,16 @@ Class::Contract - Design-by-Contract OO in Perl.
 
 =head1 VERSION
 
-This document describes version 1.02 of Class::Contract
-released August  6, 2000.
+This document describes version 1.10 of Class::Contract,
+released February  9, 2001.
 
 =head1 SYNOPSIS
 
-        package ClassName
-        use Class::Contract;
+    package ClassName
+    use Class::Contract;
 
-        contract {
-            inherits 'BaseClass';
+    contract {
+      inherits 'BaseClass';
 
 	    invar { ... };
 
@@ -570,25 +599,25 @@ released August  6, 2000.
 
 	    class attr 'shared' => SCALAR;
 
-            ctor 'new';
+      ctor 'new';
 
-            method 'methodname';
-                pre  { ... };
-                    failmsg 'Error message';
+      method 'methodname';
+        pre  { ... };
+          failmsg 'Error message';
 
-                post  { ... };
-                    failmsg 'Error message';
+        post  { ... };
+          failmsg 'Error message';
 
-                impl { ... };
+        impl { ... };
 
-            method 'nextmethod';
-                impl { ... };
+      method 'nextmethod';
+        impl { ... };
 
 	    class method 'sharedmeth';
-			impl { ... };
+			  impl { ... };
 
 	    # etc.
-        };
+    };
 
 
 =head1 DESCRIPTION
@@ -653,7 +682,7 @@ class in the current package:
 
         package Queue;
         contract {
-                # specification of class Queue attributes and methods here
+          # specification of class Queue attributes and methods here
         };
 
 =head2 Defining attributes
@@ -676,7 +705,7 @@ accessors might look like this:
 
         ${$obj->last}++;
         push @{$obj->list}, $newitem;
-        print $obj->lost->{marbles};
+        print $obj->lost->{'marbles'};
         $obj->lust->after('technology stocks');
 
 Attributes are normally object-specific, but it is also possible to define
@@ -698,7 +727,7 @@ or as a class method:
 
         print ${Queue->obj_count};
 
-In order to ensure that the clauses of a class's contract (see below)
+In order to ensure that the clauses of a class' contract (see below)
 are honoured, both class and object attributes are only accessible via
 their accessors, and those accessors may only be called within methods
 belonging to the same class hierarchy. Objects are implemented as
@@ -724,9 +753,9 @@ subroutine is used to provide an implementation for it:
 C<impl> takes a block (or a reference to a subroutine), which is used as
 the implementation of the method named by the preceding C<method> call.
 Within that block, the subroutine C<self> may be used to return a
-reference to the object on which the method was called. However, as in
-regular OO Perl, that object reference is also passed as the method's
-first argument.
+reference to the object on which the method was called. Unlike, regular
+OO Perl, the object reference is not passed as the method's first argument.
+(Note: this change occurred in version 1.10)
 
 Like attributes, methods normally belong to -- and are accessed via -- a
 specific object. To define methods that belong to the entire class, the
@@ -750,7 +779,7 @@ the C<ctor> subroutine:
 
         contract {
                 ctor 'new';
-                    impl { @{self->list} = ( $_[1] ) }
+                    impl { @{self->list} = ( $_[0] ) }
         };
 
 Note that the implementation section of a constructor I<doesn't> specify
@@ -779,7 +808,7 @@ to initialize class attributes:
                 class attr 'obj_count';
 
                 class ctor;
-                        impl { ${self->obj_count}=0 };
+                        impl { ${self->obj_count} = 0 };
         };
 
 The class constructor is invoked at the very end of the call to
@@ -794,7 +823,7 @@ class method) later in the program:
                 class attr 'obj_count';
 
                 class ctor 'reset';
-                        impl { ${self->obj_count}=0 };
+                        impl { ${self->obj_count} = 0 };
         };
 
         # and later...
@@ -929,8 +958,8 @@ change in size of an object:
 
         contract {
             method 'append';
-                post { @{self->queue} == @{old->queue} + @_ - 1 }
-                impl { push @{self->queue}, @_[1..$#_] };
+                post { @{self->queue} == @{old->queue} + @_ }
+                impl { push @{self->queue}, @_ };
         };
 
 Note that the implementation's return value is also available in the
@@ -941,8 +970,8 @@ post-condition could also be written:
 
         contract {
             method 'append';
-                post { ${&value} == @{old->queue} + @_ - 1 }
-                impl { push @{self->queue}, @_[1..$#_] };
+                post { ${&value} == @{old->queue} + @_ }
+                impl { push @{self->queue}, @_ };
         };
 
 Note that C<value> will return a reference to a scalar or to
@@ -1058,6 +1087,15 @@ derived class is to be usable. To ensure this, any constructor built by
 Class::Contract will refuse to create objects belonging to classes with
 abstract methods.
 
+Methods in a base class can also be declared as being I<private>:
+
+        contract {
+            private method 'remove';
+                impl { pop @{self->queue} };
+        };
+
+Private methods may only be invoked by the class or one of its 
+descendants. 
 
 =head2 Inheritance and condition checking
 
@@ -1103,45 +1141,44 @@ inherited methods from the derived-class methods that redefine them.
 
             method 'push';
                 # Check that data to be added is okay...
-                pre  { defined $_[1] };
+                pre  { defined $_[0] };
                     failmsg 'Cannot push an undefined value';
-                pre  { $_[2] > 0 };
+                pre  { $_[1] > 0 };
                     failmsg 'Priority must be greater than zero';
 
                 # Check that push increases stack depth appropriately...
                 post { self->count == old->count+1 };
 
                 # Check that the right thing was left on top...
-                post { old->top->{priority} <= self->top->{priority} };
+                post { old->top->{'priority'} <= self->top->{'priority'} };
 
                 # Implementation reuses inherited methods: pop any higher
                 # priority entries, push the new entry, then re-bury it...
                 impl {
-                    my ($newval, $priority) = @_[1,2];
+                    my ($newval, $priority) = @_[0,1];
                     my @betters;
                     unshift @betters, self->Stack::pop 
                         while self->count
-                           && self->Stack::top->{priority} > $priority;
-                    self->Stack::push( {val=>$newval, priority=>$priority} );
-                    self->Stack::push( $_ ) foreach @betters;
+                           && self->Stack::top->{'priority'} > $priority;
+                    self->Stack::push( {'val'=>$newval, priority=>$priority} );
+                    self->Stack::push( $_ )  foreach @betters;
                 };
 
             method 'pop';
-
                 # Check that pop decreases stack depth appropriately...
                 post { self->count == old->count-1 };
 
                 # Reuse inherited method...
                 impl {
-                    return unless self->count;
-                    return self->Stack::pop->{val};
+                    return  unless self->count;
+                    return self->Stack::pop->{'val'};
                 };
 
             method 'top';
                 post { old->count == self->count }
                 impl {
-                    return unless self->count;
-                    return self->Stack::top->{val};
+                    return  unless self->count;
+                    return self->Stack::top->{'val'};
                 };
         };
 
@@ -1223,6 +1260,10 @@ itself) to be user-defined.
 
 Damian Conway (damian@conway.org)
 
+=head1 MAINTAINER
+
+C. Garrett Goebel (ggoebel@cpan.org)
+
 =head1 BUGS
 
 There are undoubtedly serious bugs lurking somewhere in code this funky :-)
@@ -1231,6 +1272,11 @@ Bug reports and other feedback are most welcome.
 =head1 COPYRIGHT
 
 Copyright (c) 1997-2000, Damian Conway. All Rights Reserved.
+This module is free software. It may be used, redistributed
+and/or modified under the terms of the Perl Artistic License
+  (see http://www.perl.com/perl/misc/Artistic.html)
+
+Copyright (c) 2000-2001, C. Garrett Goebel. All Rights Reserved.
 This module is free software. It may be used, redistributed
 and/or modified under the terms of the Perl Artistic License
   (see http://www.perl.com/perl/misc/Artistic.html)
