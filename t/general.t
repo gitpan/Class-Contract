@@ -27,20 +27,24 @@ contract { inherits 'Mobius' };
 CODE
 
 
-#:#:ok('desc'   => 'Garbage Collection',
-# 	   'expect' => 1,
-#   	 'need'   => 'Empty Contract',
-#   	 'code'   => <<'CODE');
-#package Garbage;
-#use Class::Contract;
-#contract {
-#  attr 'name';
-#  dtor;
-#    impl { 1 };
-#};
-#{ my @o = (Garbage->new, Garbage->new, Garbage->new, Garbage->new); }
-#(keys %$Class::Contract::hook) ? 0 : 1;
-#CODE
+=pod
+
+:#:ok('desc'   => 'Garbage Collection',
+ 	   'expect' => 1,
+   	 'need'   => 'Empty Contract',
+   	 'code'   => <<'CODE');
+package Garbage;
+use Class::Contract;
+contract {
+  attr 'name';
+  dtor;
+    impl { 1 };
+};
+{ my @o = (Garbage->new, Garbage->new, Garbage->new, Garbage->new); }
+(keys %$Class::Contract::hook) ? 0 : 1;
+CODE
+
+=cut
 
 1;
 __END__

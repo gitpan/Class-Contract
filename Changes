@@ -1,25 +1,60 @@
 Revision history for Perl extension Class::Contract.
 
-Future Plans:
+Future Plans and Ponderings:
 
-  - Rexamine implementation of <C>old</C> with attention to destructors and
-    cleanup of the temporarily allocated package namespace.
+  - Damian's Legacy
+    o  Class Flattening and shortening
+    o  Easier mechanisms for porting code to use CC. Like allowing 
+       pre-declared subroutines to be assimilated into contract
 
-  - Extend <C>dclone</C> to allow user-defined initialization code
+  - Update documentation...
+    o  better examples of using objects in contracts
+    o  functions: scalar_attrs, array_attrs, hash_attrs, private, clon
 
-  - Document optional exports <C>methods</C>, <C>scalar_attrs</C>,
-    <C>hash_attrs</C>, and <C>array_attrs</C>.
+  - Constructor
+    o  Allow user-defined default values for attributes
+    o  Ponder whether or not it would be a good idea to provide a better
+       default mechanism for setting object attribute values during
+       construction. Particularly attributes which are themselves objects.
 
-  - Revisit <C>private</C> and determine what to do if derived class
-    decides to make its privates public.
+  - <C>old</C>
+    o  Allow to toggle support on/off for all and/or per-contract
+    o  Turn off by default too much overhead copying packages and objects
+    o  Reexamine implementation of <C>old</C> with attention to destructors
+       and cleanup of the temporarily allocated package namespace better. 
+       Worry about magic and stash de-allocation.
 
-  - Test for overload.pm compatibility. Help would be nice...
+  - <C>private</C>: revisit and determine what to do if derived class
+    tries to make its derived privates public.
 
-  - Add support for post-conditions on objects?
+  - <C>post</C>: Add support for post-conditions on objects? How? Scalars,
+    arrays, and hashes are actually tied objects and do this on destruction.
+    Perhaps support post conditions on objects created via Class::Contract
+    by return a blessed reference to the same $key used to lookup object data
+    in the lexical Class::Contract %data. And provide an object attribute
+    for post-conditions that gets called by doppleganger on destruction?
 
-  - Figure out how get <C>_location</C> to provide correct file and line
-    number when evals are involved. Damian thinks this would be a good
-    idea, so I'll try to get this in one of the next releases.
+  - <C>failmsg</C>: Figure out how get <C>_location</C> to provide correct
+    file and line number when evals are involved.
+
+  - Tests 
+    o  Restructure and expand
+    o  Check out new version of Test::Harness and see if I can drop the
+       Magic.pm hack used for testing.
+
+  - Add support for <C>friend</C> classes?
+
+
+1.11    Mon Mar 05 10:31:54 2001
+
+  - Added support for clone method which may be used as you might imagine.
+    To clone an object. Like ctor you may use clon to define initialization
+    pre, impl, post, and invar clauses to execute when cloning an object.
+
+  - Fixed problem working with objects which weren't created with
+    Class::Contract. Problems arose when an object wasn't a scalar reference.
+
+  - Fixed typo in _dcopy which broke deep copying of scalar references
 
 
 1.10    Sun Feb 09 12:15:31 2001

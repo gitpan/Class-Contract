@@ -21,8 +21,8 @@ use Class::Contract;
 contract {
   dtor;
     impl {
-	$::order{ref(&self)||&self} .= 'A';
-	$::args{ref(&self)||&self}->{'A'} = [@_]
+		  $::order{ref(&self)||&self} .= 'A';
+		  $::args{ref(&self)||&self}->{'A'} = [@_]
     };
 };
 
@@ -33,7 +33,7 @@ contract {
     dtor;
       impl {
         $::order{ref(&self)||&self} .= 'B';
-	$::args{ref(&self)||&self}->{'B'}=[@_]
+	      $::args{ref(&self)||&self}->{'B'}=[@_]
       };
 };
 
@@ -42,7 +42,6 @@ contract {
   inherits 'Alpha';
   dtor;
     impl {
-      shift  if $Class::Contract::VERSION < 1.1;
       $::order{ref(&self)||&self} .= 'C';
       $::args{ref(&self)||&self}->{'C'}=[@_]
     };
@@ -53,7 +52,6 @@ use Class::Contract;
 contract {
   dtor;
     impl {
-      shift  if $Class::Contract::VERSION < 1.1;
       $::order{ref(&self)||&self} .= 'D';
       $::args{ref(&self)||&self}->{'D'} = [@_];
     };
@@ -66,7 +64,6 @@ contract {
   inherits 'Delta';
   dtor;
     impl {
-      shift  if $Class::Contract::VERSION < 1.1;
       $::order{ref(&self)||&self} .= 'E';
       $::args{ref(&self)||&self}->{'E'} = [@_]
     };
@@ -78,7 +75,6 @@ contract {
   inherits qw( Bravo Charlie Echo );
   dtor;
     impl {
-      shift  if $Class::Contract::VERSION < 1.1;
       $::order{ref(&self)||&self} .= 'F';
       $::args{ref(&self)||&self}->{'F'} = [@_]
     };
